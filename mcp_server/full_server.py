@@ -661,7 +661,16 @@ async def main():
     logger.info("✅ All components initialized")
     logger.info("=" * 50)
     logger.info("Server ready for connections")
-    logger.info("Available tools: 19")
+    logger.info("Available tools: 23")
+    logger.info("=" * 50)
+    logger.info("Tools breakdown:")
+    logger.info("  - Market Data: 3")
+    logger.info("  - Technical Analysis: 5")
+    logger.info("  - Market Scanning: 4")
+    logger.info("  - Account: 3")
+    logger.info("  - Trading Operations: 4")
+    logger.info("  - Monitoring: 2")
+    logger.info("  - Auto-Actions: 2")
     logger.info("=" * 50)
     
     # Запуск MCP server
