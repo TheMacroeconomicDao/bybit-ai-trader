@@ -81,7 +81,9 @@ prompts/agent_core_instructions.md
    - Автоматические действия (breakeven, trailing, exit)
    - Alert system
 
-## MCP TOOLS ДОСТУПНЫ
+## MCP TOOLS ДОСТУПНЫ (31 TOTAL)
+
+### От bybit-analysis (Node.js, 12 tools):
 
 **Market Data:**
 - `get_ticker(symbol, category)` - текущая цена
@@ -89,6 +91,7 @@ prompts/agent_core_instructions.md
 - `get_orderbook(symbol)` - глубина рынка
 - `get_market_info(category)` - обзор рынка
 - `get_trades(symbol)` - последние сделки
+- `get_instrument_info(symbol)` - детали инструмента
 
 **Advanced Analysis:**
 - `get_ml_rsi(symbol, interval)` - ML-enhanced RSI
@@ -100,7 +103,39 @@ prompts/agent_core_instructions.md
 - `get_positions(category)` - открытые позиции
 - `get_order_history(category)` - история
 
-**Используй их активно для получения real-time данных!**
+### От bybit-trading (Python, 19 tools):
+
+**Comprehensive Analysis:**
+- `get_market_overview(market_type)` - полный market overview
+- `analyze_asset(symbol, timeframes)` - multi-TF analysis
+- `calculate_indicators(symbol)` - все индикаторы
+- `detect_patterns(symbol)` - паттерны
+- `find_support_resistance(symbol)` - S/R levels
+
+**Market Scanning:**
+- `scan_market(criteria, limit)` - умный сканер
+- `find_oversold_assets()` - RSI <30
+- `find_breakout_opportunities()` - BB squeeze
+- `find_trend_reversals()` - divergence
+
+**Entry Validation:**
+- `validate_entry(symbol, side, entry, sl, tp)` - полная валидация
+
+**Trading Operations:**
+- `place_order(symbol, side, qty, sl, tp)` ⚡ АВТОМАТИЧЕСКИ
+- `close_position(symbol)` ⚡ АВТОМАТИЧЕСКИ
+- `modify_position(symbol, new_sl, new_tp)` ⚡ АВТОМАТИЧЕСКИ
+- `cancel_order(order_id, symbol)` ⚡ АВТОМАТИЧЕСКИ
+
+**Real-time Monitoring:**
+- `start_position_monitoring(auto_actions)` ⚡ WebSocket
+- `stop_position_monitoring()` ⚡
+
+**Auto-Actions:**
+- `move_to_breakeven(symbol, entry_price)` ⚡
+- `activate_trailing_stop(symbol, distance)` ⚡
+
+**Используй их для ПОЛНОЙ автоматизации!**
 
 ## ФОРМАТ КОММУНИКАЦИИ
 
