@@ -7,6 +7,7 @@ Complete Bybit Trading MCP Server
 import asyncio
 import json
 import sys
+import traceback
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -767,18 +768,89 @@ async def call_tool(name: str, arguments: Any) -> List[TextContent]:
                 logger.info(f"place_order called with arguments: {arguments}")
                 logger.info(f"Arguments type: {type(arguments)}")
                 
-                # Безопасное извлечение параметров
-                symbol = str(arguments.get("symbol", "")) if arguments.get("symbol") else ""
-                side = str(arguments.get("side", "")) if arguments.get("side") else ""
-                order_type = str(arguments.get("order_type", "Market")) if arguments.get("order_type") else "Market"
-                quantity = float(arguments.get("quantity", 0)) if arguments.get("quantity") else 0.0
-                price = float(arguments.get("price")) if arguments.get("price") is not None else None
-                stop_loss = float(arguments.get("stop_loss")) if arguments.get("stop_loss") is not None else None
-                take_profit = float(arguments.get("take_profit")) if arguments.get("take_profit") is not None else None
-                category = str(arguments.get("category", "spot")) if arguments.get("category") else "spot"
-                leverage = int(arguments.get("leverage")) if arguments.get("leverage") is not None else None
+                # Безопасная проверка типа arguments
+                if not isinstance(arguments, dict):
+                    logger.error(f"Arguments is not a dict: {type(arguments)}, value: {arguments}")
+                    # Пробуем преобразовать в dict, если это строка JSON
+                    if isinstance(arguments, str):
+                        try:
+                            import json
+                            arguments = json.loads(arguments)
+                            logger.info(f"Parsed arguments from JSON string")
+                        except json.JSONDecodeError as json_err:
+                            logger.error(f"Failed to parse arguments as JSON: {json_err}")
+                            result = {
+                                "success": False,
+                                "error": f"Invalid arguments format: expected dict, got {type(arguments)}"
+                            }
+                            return [TextContent(type="text", text=json.dumps(result, indent=2))]
+                    else:
+                        result = {
+                            "success": False,
+                            "error": f"Invalid arguments format: expected dict, got {type(arguments)}"
+                        }
+                        return [TextContent(type="text", text=json.dumps(result, indent=2))]
                 
-                logger.info(f"Parsed params: symbol={symbol}, side={side}, qty={quantity}, category={category}")
+                logger.info(f"Arguments keys: {list(arguments.keys())}")
+                logger.info(f"Arguments values: {list(arguments.values())}")
+                
+                # Безопасное извлечение параметров с защитой от KeyError
+                try:
+                    symbol = str(arguments.get("symbol", "")) if arguments.get("symbol") else ""
+                except (KeyError, AttributeError) as e:
+                    logger.error(f"Error extracting symbol: {e}", exc_info=True)
+                    symbol = ""
+                
+                try:
+                    side = str(arguments.get("side", "")) if arguments.get("side") else ""
+                except (KeyError, AttributeError) as e:
+                    logger.error(f"Error extracting side: {e}", exc_info=True)
+                    side = ""
+                
+                try:
+                    order_type = str(arguments.get("order_type", "Market")) if arguments.get("order_type") else "Market"
+                except (KeyError, AttributeError) as e:
+                    logger.error(f"Error extracting order_type: {e}", exc_info=True)
+                    order_type = "Market"
+                
+                try:
+                    quantity = float(arguments.get("quantity", 0)) if arguments.get("quantity") else 0.0
+                except (KeyError, AttributeError, ValueError) as e:
+                    logger.error(f"Error extracting quantity: {e}", exc_info=True)
+                    quantity = 0.0
+                
+                try:
+                    price = float(arguments.get("price")) if arguments.get("price") is not None else None
+                except (KeyError, AttributeError, ValueError) as e:
+                    logger.error(f"Error extracting price: {e}", exc_info=True)
+                    price = None
+                
+                try:
+                    stop_loss = float(arguments.get("stop_loss")) if arguments.get("stop_loss") is not None else None
+                except (KeyError, AttributeError, ValueError) as e:
+                    logger.error(f"Error extracting stop_loss: {e}", exc_info=True)
+                    stop_loss = None
+                
+                try:
+                    take_profit = float(arguments.get("take_profit")) if arguments.get("take_profit") is not None else None
+                except (KeyError, AttributeError, ValueError) as e:
+                    logger.error(f"Error extracting take_profit: {e}", exc_info=True)
+                    take_profit = None
+                
+                try:
+                    category = str(arguments.get("category", "spot")) if arguments.get("category") else "spot"
+                    logger.info(f"Category extracted: {category} (type: {type(category)})")
+                except (KeyError, AttributeError) as e:
+                    logger.error(f"Error extracting category: {e}", exc_info=True)
+                    category = "spot"
+                
+                try:
+                    leverage = int(arguments.get("leverage")) if arguments.get("leverage") is not None else None
+                except (KeyError, AttributeError, ValueError) as e:
+                    logger.error(f"Error extracting leverage: {e}", exc_info=True)
+                    leverage = None
+                
+                logger.info(f"Parsed params: symbol={symbol}, side={side}, qty={quantity}, category={category}, leverage={leverage}")
                 
                 if not symbol or not side or quantity <= 0:
                     result = {
@@ -798,18 +870,32 @@ async def call_tool(name: str, arguments: Any) -> List[TextContent]:
                         leverage=leverage
                     )
             except KeyError as e:
-                logger.error(f"KeyError in place_order handler: {e}", exc_info=True)
+                error_key = str(e)
+                logger.error(f"KeyError in place_order handler: {error_key}", exc_info=True)
+                logger.error(f"KeyError args: {e.args if hasattr(e, 'args') else 'N/A'}")
+                logger.error(f"KeyError repr: {repr(e)}")
+                logger.error(f"Arguments at error time: {arguments if 'arguments' in locals() else 'N/A'}")
                 result = {
                     "success": False,
-                    "error": f"KeyError: {str(e)}",
-                    "message": f"Missing parameter: {str(e)}"
+                    "error": f"KeyError: {error_key}",
+                    "message": f"Missing parameter: {error_key}",
+                    "error_type": "KeyError",
+                    "error_details": {
+                        "key": error_key,
+                        "type": str(type(e)),
+                        "args": list(e.args) if hasattr(e, 'args') else []
+                    }
                 }
             except Exception as e:
-                logger.error(f"Error in place_order handler: {e}", exc_info=True)
+                error_type = type(e).__name__
+                error_msg = str(e)
+                logger.error(f"Error in place_order handler: {error_type}: {error_msg}", exc_info=True)
+                logger.error(f"Full traceback: {traceback.format_exc()}")
                 result = {
                     "success": False,
-                    "error": str(e),
-                    "message": f"Failed to process place_order: {str(e)}"
+                    "error": error_msg,
+                    "error_type": error_type,
+                    "message": f"Failed to process place_order: {error_type}: {error_msg}"
                 }
         
         elif name == "close_position":

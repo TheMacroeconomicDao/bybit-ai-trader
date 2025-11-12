@@ -69,6 +69,13 @@ prompts/agent_core_instructions.md
 1. **Анализ рынка:** `prompts/market_analysis_protocol.md`
    - 10-шаговый процесс
    - BTC сначала → market overview → regime → multi-TF → volume → correlation → watchlist → deep analysis → самопроверка → презентация
+   - ⚠️ **КРИТИЧЕСКИ ВАЖНО**: Анализировать СОТНИ активов эффективно через многоуровневую фильтрацию:
+     • УРОВЕНЬ 1: Быстрый скрининг 200-500 активов (базовые метрики)
+     • УРОВЕНЬ 2: Средний анализ 50-100 активов (индикаторы, preliminary confluence)
+     • УРОВЕНЬ 3: Детальный анализ 20-30 активов (analyze_asset, полный confluence)
+     • Использовать ВСЕ инструменты поиска ПАРАЛЛЕЛЬНО (scan_market с разными критериями, find_oversold_assets, find_breakout_opportunities, find_trend_reversals)
+     • НЕ останавливаться на первых 3-4 результатах!
+     • НЕ делать вывод "нет возможностей" пока не проанализировано минимум 100 активов!
 
 2. **Решение о входе:** `prompts/entry_decision_framework.md`
    - Confluence scoring matrix

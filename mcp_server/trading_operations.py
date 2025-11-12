@@ -9,6 +9,11 @@ from pybit.unified_trading import HTTP
 from loguru import logger
 import threading
 import time
+import traceback
+import requests
+import hmac
+import hashlib
+import json
 
 
 class BalanceCache:
@@ -289,6 +294,286 @@ class TradingOperations:
         )
         
         logger.info(f"Trading Operations initialized ({'testnet' if testnet else 'mainnet'})")
+        
+        # Базовый URL для API
+        self.base_url = "https://api-testnet.bybit.com" if testnet else "https://api.bybit.com"
+    
+    def _generate_signature(self, params: Dict[str, Any], timestamp: int, recv_window: int = 5000, use_json_body: bool = True) -> str:
+        """Генерация подписи для Bybit API v5
+        
+        Для POST запросов с JSON body (use_json_body=True):
+        - Используем сырой JSON body: timestamp + api_key + recv_window + json_string
+        
+        Для GET запросов (use_json_body=False):
+        - Формат: timestamp + api_key + recv_window + query_string
+        """
+        if use_json_body:
+            # Для POST: используем JSON строку напрямую
+            json_body = json.dumps(params, separators=(',', ':'))  # Без пробелов
+            sign_string = f"{timestamp}{self.api_key}{recv_window}{json_body}"
+        else:
+            # Для GET: формат key=value&key2=value2
+            param_str = ""
+            if params:
+                sorted_params = sorted(params.items())
+                param_str = "&".join([f"{k}={v}" for k, v in sorted_params])
+            sign_string = f"{timestamp}{self.api_key}{recv_window}{param_str}"
+        
+        signature = hmac.new(
+            self.api_secret.encode('utf-8'),
+            sign_string.encode('utf-8'),
+            hashlib.sha256
+        ).hexdigest()
+        
+        return signature
+    
+    def _place_order_direct_http(self, order_params: Dict[str, Any]) -> Dict[str, Any]:
+        """Размещение ордера через прямой HTTP запрос к Bybit API v5"""
+        endpoint = "/v5/order/create"
+        url = f"{self.base_url}{endpoint}"
+        
+        timestamp = int(time.time() * 1000)
+        recv_window = 5000
+        
+        # Параметры запроса - сохраняем оригинальные типы для JSON
+        # Bybit API v5 ожидает правильные типы в JSON (не все строки)
+        params = {}
+        for k, v in order_params.items():
+            if v is not None:
+                # Сохраняем оригинальные типы, но конвертируем некоторые значения
+                if isinstance(v, bool):
+                    params[k] = v  # Boolean остается boolean
+                elif isinstance(v, (int, float)):
+                    # Числа конвертируем в строки для Bybit API
+                    params[k] = str(v)
+                else:
+                    params[k] = str(v)
+        
+        # Генерируем подпись используя JSON body
+        signature = self._generate_signature(params, timestamp, recv_window, use_json_body=True)
+        
+        # Заголовки для Bybit API v5
+        headers = {
+            "X-BAPI-API-KEY": self.api_key,
+            "X-BAPI-TIMESTAMP": str(timestamp),
+            "X-BAPI-RECV-WINDOW": str(recv_window),
+            "X-BAPI-SIGN": signature,
+            "Content-Type": "application/json"
+        }
+        
+        # Отправляем запрос с retry механизмом
+        logger.info(f"Direct HTTP request to {url}")
+        logger.info(f"Request params: {params}")
+        logger.info(f"Request headers: {dict((k, v if k != 'X-BAPI-SIGN' else '***') for k, v in headers.items())}")
+        
+        max_retries = 3
+        # Используем tuple timeout: (connect_timeout, read_timeout)
+        # connect_timeout - для установки соединения и SSL handshake
+        # read_timeout - для чтения ответа
+        timeout = (15, 30)  # 15 сек на подключение, 30 сек на чтение
+        
+        # Создаем сессию с настройками для лучшей работы с SSL
+        session = requests.Session()
+        # Увеличиваем количество повторных попыток для SSL
+        session.mount('https://', requests.adapters.HTTPAdapter(max_retries=2))
+        
+        for attempt in range(max_retries):
+            try:
+                logger.info(f"Attempt {attempt + 1}/{max_retries} to {url}")
+                logger.debug(f"Request params: {json.dumps(params, indent=2)}")
+                
+                # Используем session.post для лучшего контроля
+                response = session.post(
+                    url, 
+                    json=params, 
+                    headers=headers, 
+                    timeout=timeout,
+                    verify=True  # Проверяем SSL сертификат
+                )
+                response.raise_for_status()
+                logger.info(f"Request successful: HTTP {response.status_code}")
+                break  # Успешно, выходим из цикла
+            except requests.exceptions.SSLError as ssl_err:
+                logger.error(f"SSL error on attempt {attempt + 1}: {ssl_err}")
+                if attempt < max_retries - 1:
+                    wait_time = (attempt + 1) * 3
+                    logger.warning(f"Retrying SSL connection in {wait_time}s...")
+                    time.sleep(wait_time)
+                    # Обновляем timestamp и подпись
+                    timestamp = int(time.time() * 1000)
+                    headers["X-BAPI-TIMESTAMP"] = str(timestamp)
+                    signature = self._generate_signature(params, timestamp, recv_window, use_json_body=True)
+                    headers["X-BAPI-SIGN"] = signature
+                else:
+                    raise Exception(f"SSL connection failed after {max_retries} attempts: {str(ssl_err)}")
+            except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as e:
+                if attempt < max_retries - 1:
+                    wait_time = (attempt + 1) * 2  # Экспоненциальная задержка: 2, 4, 6 секунд
+                    logger.warning(f"Request failed (attempt {attempt + 1}/{max_retries}): {e}. Retrying in {wait_time}s...")
+                    time.sleep(wait_time)
+                    # Обновляем timestamp и подпись для нового запроса
+                    timestamp = int(time.time() * 1000)
+                    headers["X-BAPI-TIMESTAMP"] = str(timestamp)
+                    signature = self._generate_signature(params, timestamp, recv_window, use_json_body=True)
+                    headers["X-BAPI-SIGN"] = signature
+                else:
+                    raise Exception(f"HTTP request failed after {max_retries} attempts: {str(e)}")
+        
+        # Закрываем сессию после успешного запроса
+        try:
+            session.close()
+        except:
+            pass
+        
+        # Обрабатываем успешный ответ с безопасным парсингом
+        try:
+            # Безопасный парсинг JSON ответа
+            response_text = response.text
+            logger.debug(f"Raw HTTP response text: {response_text[:500]}")  # Логируем первые 500 символов
+            
+            # Проверяем, что ответ - это валидный JSON
+            if isinstance(response_text, str):
+                try:
+                    result = json.loads(response_text)
+                except json.JSONDecodeError as json_err:
+                    logger.error(f"Failed to parse JSON response: {json_err}")
+                    logger.error(f"Response text: {response_text}")
+                    raise Exception(f"Invalid JSON response from API: {str(json_err)}")
+            else:
+                # Если response.text уже не строка, пробуем response.json()
+                result = response.json()
+            
+            # Проверяем, что result - это словарь
+            if not isinstance(result, dict):
+                logger.error(f"Unexpected response type: {type(result)}, value: {result}")
+                raise Exception(f"Expected dict response, got {type(result)}")
+            
+            logger.info(f"Direct HTTP response: {result}")
+            
+            # Безопасное извлечение retCode и retMsg
+            ret_code = result.get("retCode")
+            ret_msg = result.get("retMsg", "Unknown error")
+            
+            if ret_code != 0:
+                error_msg = f"Bybit API error (retCode={ret_code}): {ret_msg}"
+                logger.error(error_msg)
+                raise Exception(error_msg)
+            
+            return result
+            
+        except KeyError as ke:
+            # Если возникает KeyError при обработке ответа, логируем детали
+            error_key = str(ke)
+            logger.error(f"KeyError processing API response: {error_key}")
+            logger.error(f"Response keys: {list(result.keys()) if isinstance(result, dict) else 'N/A'}")
+            logger.error(f"Response type: {type(result)}")
+            logger.error(f"Response value: {result}")
+            logger.error(f"Traceback: {traceback.format_exc()}")
+            raise Exception(f"KeyError processing API response: {error_key}. Response structure may be unexpected.")
+    
+    def _set_leverage_direct_http(self, leverage_params: Dict[str, Any]) -> Dict[str, Any]:
+        """Установка leverage через прямой HTTP запрос к Bybit API v5"""
+        endpoint = "/v5/position/set-leverage"
+        url = f"{self.base_url}{endpoint}"
+        
+        timestamp = int(time.time() * 1000)
+        recv_window = 5000
+        
+        # Параметры запроса
+        params = {}
+        for k, v in leverage_params.items():
+            if v is not None:
+                params[k] = str(v)
+        
+        # Генерируем подпись используя JSON body
+        signature = self._generate_signature(params, timestamp, recv_window, use_json_body=True)
+        
+        # Заголовки для Bybit API v5
+        headers = {
+            "X-BAPI-API-KEY": self.api_key,
+            "X-BAPI-TIMESTAMP": str(timestamp),
+            "X-BAPI-RECV-WINDOW": str(recv_window),
+            "X-BAPI-SIGN": signature,
+            "Content-Type": "application/json"
+        }
+        
+        # Отправляем запрос с улучшенной обработкой SSL
+        logger.info(f"Setting leverage via direct HTTP: {params}")
+        
+        # Используем сессию с настройками для SSL
+        session = requests.Session()
+        session.mount('https://', requests.adapters.HTTPAdapter(max_retries=2))
+        timeout = (15, 30)  # 15 сек на подключение, 30 сек на чтение
+        
+        try:
+            response = session.post(
+                url, 
+                json=params, 
+                headers=headers, 
+                timeout=timeout,
+                verify=True
+            )
+            response.raise_for_status()
+            
+            # Безопасный парсинг JSON ответа
+            try:
+                response_text = response.text
+                logger.debug(f"Raw leverage response text: {response_text[:500]}")
+                
+                # Проверяем, что ответ - это валидный JSON
+                if isinstance(response_text, str):
+                    try:
+                        result = json.loads(response_text)
+                    except json.JSONDecodeError as json_err:
+                        logger.error(f"Failed to parse JSON response: {json_err}")
+                        logger.error(f"Response text: {response_text}")
+                        raise Exception(f"Invalid JSON response from API: {str(json_err)}")
+                else:
+                    result = response.json()
+                
+                # Проверяем, что result - это словарь
+                if not isinstance(result, dict):
+                    logger.error(f"Unexpected leverage response type: {type(result)}, value: {result}")
+                    raise Exception(f"Expected dict response, got {type(result)}")
+                
+                logger.info(f"Leverage response: {result}")
+                
+                # Безопасное извлечение retCode и retMsg
+                ret_code = result.get("retCode")
+                ret_msg = result.get("retMsg", "Unknown error")
+                
+                if ret_code != 0:
+                    error_msg = f"Bybit API error (retCode={ret_code}): {ret_msg}"
+                    logger.error(error_msg)
+                    raise Exception(error_msg)
+                
+                return result
+                
+            except KeyError as ke:
+                # Если возникает KeyError при обработке ответа, логируем детали
+                error_key = str(ke)
+                logger.error(f"KeyError processing leverage API response: {error_key}")
+                logger.error(f"Response keys: {list(result.keys()) if isinstance(result, dict) else 'N/A'}")
+                logger.error(f"Response type: {type(result)}")
+                logger.error(f"Response value: {result}")
+                logger.error(f"Traceback: {traceback.format_exc()}")
+                raise Exception(f"KeyError processing leverage API response: {error_key}. Response structure may be unexpected.")
+            
+        except requests.exceptions.RequestException as e:
+            logger.error(f"HTTP request failed: {e}")
+            if hasattr(e, 'response') and e.response is not None:
+                try:
+                    error_body = e.response.json()
+                    logger.error(f"Error response body: {error_body}")
+                except:
+                    logger.error(f"Error response text: {e.response.text}")
+            raise Exception(f"HTTP request failed: {str(e)}")
+        finally:
+            # Закрываем сессию в любом случае
+            try:
+                session.close()
+            except:
+                pass
     
     def invalidate_balance_cache(self, account_type: Optional[str] = None, coin: Optional[str] = None) -> None:
         """
@@ -333,6 +618,8 @@ class TradingOperations:
             Детали размещённого ордера
         """
         logger.info(f"Placing order: {side} {quantity} {symbol} @ {price or 'Market'}")
+        logger.info(f"Order parameters: category={category}, order_type={order_type}, leverage={leverage}")
+        logger.info(f"Category type: {type(category)}, value: {repr(category)}")
         
         try:
             # Валидация входных параметров
@@ -348,10 +635,13 @@ class TradingOperations:
                 raise ValueError(f"Price is required for Limit orders and must be positive. Got: {price}")
             if category not in ["spot", "linear", "inverse"]:
                 raise ValueError(f"Category must be 'spot', 'linear', or 'inverse'. Got: {category}")
+            
+            logger.info(f"Validation passed. Proceeding with order placement for category: {category}")
             if leverage and (leverage < 1 or leverage > 125):
                 raise ValueError(f"Leverage must be between 1 and 125. Got: {leverage}")
             
             # Параметры ордера
+            # ВАЖНО: Для фьючерсов Pybit может требовать другие параметры
             order_params = {
                 "category": category,
                 "symbol": symbol,
@@ -367,85 +657,340 @@ class TradingOperations:
                 elif order_type == "Limit":
                     order_params["timeInForce"] = "GTC"  # Good Till Cancel для Limit
             
-            # Добавляем цену для Limit
-            if order_type == "Limit" and price:
-                order_params["price"] = str(price)
-            
-            # Для futures можем добавить SL/TP сразу
+            # Для futures добавляем timeInForce и другие обязательные параметры
             if category in ["linear", "inverse"]:
+                # Для фьючерсов timeInForce обязателен
+                if order_type == "Market":
+                    order_params["timeInForce"] = "IOC"  # Immediate or Cancel для Market
+                elif order_type == "Limit":
+                    order_params["timeInForce"] = "GTC"  # Good Till Cancel для Limit
+                
+                # Для фьючерсов может потребоваться positionIdx (0=one-way, 1=Buy side, 2=Sell side)
+                # По умолчанию используем 0 (one-way mode)
+                order_params["positionIdx"] = 0
+                
+                # Дополнительные параметры для фьючерсов
+                order_params["reduceOnly"] = False
+                order_params["closeOnTrigger"] = False
+                
                 if stop_loss:
                     order_params["stopLoss"] = str(stop_loss)
                 if take_profit:
                     order_params["takeProfit"] = str(take_profit)
-                
-                # Устанавливаем leverage перед открытием позиции
-                if leverage:
-                    try:
-                        leverage_response = self.session.set_leverage(
-                            category=category,
-                            symbol=symbol,
-                            buyLeverage=str(leverage),
-                            sellLeverage=str(leverage)
-                        )
-                        if leverage_response["retCode"] != 0:
-                            logger.warning(f"Failed to set leverage: {leverage_response.get('retMsg')}")
+            
+            # Добавляем цену для Limit
+            if order_type == "Limit" and price:
+                order_params["price"] = str(price)
+            
+            # Устанавливаем leverage перед открытием позиции
+            # Для фьючерсов используем прямой HTTP запрос
+            # ВАЖНО: Делаем это ДО размещения ордера, но после формирования order_params
+            if leverage and category in ["linear", "inverse"]:
+                try:
+                    logger.info(f"Setting leverage {leverage}x for {symbol} ({category})")
+                    # Используем прямой HTTP запрос для установки leverage
+                    leverage_params = {
+                        "category": category,
+                        "symbol": symbol,
+                        "buyLeverage": str(leverage),
+                        "sellLeverage": str(leverage)
+                    }
+                    logger.debug(f"Leverage params: {leverage_params}")
+                    leverage_response = self._set_leverage_direct_http(leverage_params)
+                    logger.debug(f"Leverage response: {leverage_response}")
+                    
+                    # Безопасная проверка ответа с детальным логированием
+                    logger.debug(f"Leverage response type: {type(leverage_response)}")
+                    logger.debug(f"Leverage response value: {leverage_response}")
+                    
+                    if isinstance(leverage_response, dict):
+                        # Безопасное извлечение retCode
+                        ret_code = leverage_response.get("retCode")
+                        if ret_code is not None and ret_code != 0:
+                            ret_msg = leverage_response.get("retMsg", "Unknown error")
+                            logger.warning(f"Failed to set leverage: {ret_msg} (retCode={ret_code})")
                         else:
                             logger.info(f"Leverage set to {leverage}x for {symbol}")
-                    except Exception as e:
-                        logger.warning(f"Error setting leverage: {e}")
+                    elif isinstance(leverage_response, str):
+                        # Если ответ - строка, пробуем распарсить как JSON
+                        logger.warning(f"Leverage response is string, attempting to parse as JSON")
+                        try:
+                            leverage_response = json.loads(leverage_response)
+                            if isinstance(leverage_response, dict):
+                                ret_code = leverage_response.get("retCode")
+                                if ret_code is not None and ret_code != 0:
+                                    ret_msg = leverage_response.get("retMsg", "Unknown error")
+                                    logger.warning(f"Failed to set leverage: {ret_msg} (retCode={ret_code})")
+                                else:
+                                    logger.info(f"Leverage set to {leverage}x for {symbol}")
+                        except json.JSONDecodeError as json_err:
+                            logger.error(f"Failed to parse leverage response as JSON: {json_err}")
+                            logger.warning(f"Leverage setup failed, continuing with order placement")
+                    else:
+                        logger.warning(f"Unexpected leverage response format: {type(leverage_response)}")
+                except KeyError as ke:
+                    error_key = str(ke)
+                    logger.error(f"KeyError in leverage setup: {error_key}", exc_info=True)
+                    logger.error(f"Leverage response at error: {leverage_response if 'leverage_response' in locals() else 'N/A'}")
+                    logger.error(f"Leverage response type: {type(leverage_response) if 'leverage_response' in locals() else 'N/A'}")
+                    # Не прерываем выполнение, продолжаем с размещением ордера
+                    logger.warning(f"Leverage setup failed with KeyError, continuing with order placement")
+                except Exception as e:
+                    logger.warning(f"Error setting leverage: {e}", exc_info=True)
+                    # Не прерываем выполнение, продолжаем с размещением ордера
+            elif leverage and category == "spot":
+                # Для spot leverage не используется
+                logger.info("Leverage is not applicable for spot trading")
             
-            # Размещаем ордер
-            response = self.session.place_order(**order_params)
+            # Размещаем ордер с детальным логированием
+            logger.info(f"Placing order with params: {order_params}")
+            logger.info(f"Params type: {type(order_params)}")
+            logger.info(f"Params keys: {list(order_params.keys())}")
+            logger.info(f"Params values: {list(order_params.values())}")
+            
+            # КРИТИЧНО: Для фьючерсов (linear/inverse) используем прямой HTTP запрос
+            # так как Pybit имеет проблемы с обработкой ответов для фьючерсов
+            if category in ["linear", "inverse"]:
+                logger.info("Using direct HTTP request for futures order (Pybit has issues with futures)")
+                try:
+                    response = self._place_order_direct_http(order_params)
+                    logger.info("Direct HTTP request successful")
+                except Exception as http_error:
+                    logger.error(f"Direct HTTP request failed: {http_error}")
+                    raise Exception(f"Failed to place futures order via direct HTTP: {str(http_error)}")
+            else:
+                # Для spot используем Pybit
+                try:
+                    # Пробуем вызвать API через Pybit
+                    # Важно: Pybit может выбрасывать KeyError если параметры неправильные
+                    # или если ответ API имеет неожиданную структуру
+                    response = self.session.place_order(**order_params)
+                except KeyError as ke:
+                    # Если KeyError происходит при вызове API, это может быть проблема с параметрами
+                    # или с обработкой ответа внутри Pybit
+                    error_key = str(ke)
+                    logger.error(f"KeyError during API call: {error_key}")
+                    logger.error(f"KeyError args: {ke.args}")
+                    logger.error(f"KeyError repr: {repr(ke)}")
+                    logger.error(f"Order params that caused error: {order_params}")
+                    logger.error(f"Traceback: {traceback.format_exc()}")
+                    
+                    # Проверяем, может быть проблема в параметрах
+                    if '"category"' in error_key or "'category'" in error_key:
+                        # Похоже, что Pybit ожидает category в другом формате или месте
+                        logger.error("Possible issue: category parameter format")
+                        logger.error("Attempting direct HTTP request to Bybit API as fallback")
+                        
+                        # Пробуем прямой HTTP запрос к Bybit API
+                        try:
+                            response = self._place_order_direct_http(order_params)
+                            logger.info("Success with direct HTTP request")
+                        except Exception as http_error:
+                            logger.error(f"Direct HTTP request also failed: {http_error}")
+                            # Если и это не помогло, пробуем без category для spot
+                            if category == "spot":
+                                logger.info("Retrying without explicit category for spot")
+                                order_params_no_cat = {k: v for k, v in order_params.items() if k != "category"}
+                                try:
+                                    response = self.session.place_order(**order_params_no_cat)
+                                    logger.info("Success without category parameter")
+                                except Exception as retry_error:
+                                    logger.error(f"Retry also failed: {retry_error}")
+                                    raise Exception(f"API parameter error (category issue): {str(ke)}")
+                            else:
+                                raise Exception(f"API parameter error: {str(ke)}")
+                    else:
+                        raise Exception(f"API parameter error: {str(ke)}")
+                except Exception as api_error:
+                    error_type = type(api_error).__name__
+                    error_msg = str(api_error)
+                    logger.error(f"Error calling session.place_order: {error_type}: {error_msg}", exc_info=True)
+                    logger.error(f"Full traceback: {traceback.format_exc()}")
+                    raise Exception(f"API call failed: {error_type}: {error_msg}")
+            
+            # Безопасная проверка и нормализация ответа
+            # Pybit может возвращать ответ в разных форматах
+            normalized_response = None
+            
+            # Если response - строка, пробуем распарсить как JSON
+            if isinstance(response, str):
+                logger.warning(f"Response is string, attempting to parse as JSON")
+                try:
+                    normalized_response = json.loads(response)
+                except json.JSONDecodeError as json_err:
+                    logger.error(f"Failed to parse response as JSON: {json_err}")
+                    logger.error(f"Response text: {response[:500]}")
+                    raise Exception(f"Invalid JSON response: {str(json_err)}")
+            elif isinstance(response, dict):
+                normalized_response = response
+            else:
+                logger.error(f"Unexpected response type: {type(response)}")
+                logger.error(f"Response value: {response}")
+                raise Exception(f"Unexpected response type: {type(response)}. Expected dict or str.")
+            
+            # Теперь работаем с нормализованным ответом
+            response = normalized_response
             
             # Логируем полный ответ для отладки
-            logger.debug(f"Place order response: {response}")
+            logger.info(f"Place order response: {response}")
+            logger.info(f"Response type: {type(response)}")
+            if isinstance(response, dict):
+                logger.info(f"Response keys: {list(response.keys())}")
+                logger.info(f"Response retCode: {response.get('retCode')}")
+                logger.info(f"Response retMsg: {response.get('retMsg')}")
+                if 'result' in response:
+                    result = response['result']
+                    logger.info(f"Result type: {type(result)}")
+                    if isinstance(result, dict):
+                        logger.info(f"Result keys: {list(result.keys())}")
+                    elif isinstance(result, list) and len(result) > 0:
+                        logger.info(f"Result[0] type: {type(result[0])}")
+                        if isinstance(result[0], dict):
+                            logger.info(f"Result[0] keys: {list(result[0].keys())}")
             
-            if response.get("retCode") == 0:
-                order_data = response["result"]
-                logger.info(f"Order placed successfully: {order_data.get('orderId')}")
+            # Безопасная проверка структуры ответа
+            if not isinstance(response, dict):
+                raise Exception(f"Unexpected response type after normalization: {type(response)}. Expected dict.")
+            
+            # Безопасное извлечение retCode и retMsg
+            ret_code = response.get("retCode")
+            ret_msg = response.get("retMsg", "Unknown error")
+            
+            logger.info(f"Response retCode: {ret_code}, retMsg: {ret_msg}")
+            logger.info(f"Response keys: {list(response.keys())}")
+            
+            # Если ответ пришел от прямого HTTP запроса, он уже обработан
+            # и имеет правильную структуру
+            if ret_code == 0:
+                # Безопасное извлечение result
+                result = response.get("result")
+                if result is None:
+                    logger.warning("Response has retCode=0 but no 'result' field. Response: " + str(response))
+                    # Пробуем найти orderId в самом response
+                    order_id = response.get("orderId") or response.get("order_id")
+                    if order_id:
+                        logger.info(f"Found orderId in response root: {order_id}")
+                        order_data = response
+                    else:
+                        raise Exception("Response has retCode=0 but no 'result' field and no orderId in root")
+                else:
+                    # Если result - это список, берем первый элемент
+                    if isinstance(result, list):
+                        if len(result) > 0:
+                            order_data = result[0]
+                        else:
+                            raise Exception("Response result is empty list")
+                    elif isinstance(result, dict):
+                        order_data = result
+                    else:
+                        raise Exception(f"Unexpected result type: {type(result)}")
+                
+                # Безопасное извлечение orderId
+                order_id = order_data.get("orderId") or order_data.get("order_id") or order_data.get("id")
+                if not order_id:
+                    logger.warning(f"Order ID not found in response. Available keys: {order_data.keys()}")
+                    # Пытаемся использовать symbol + timestamp как временный ID
+                    order_id = f"{symbol}_{int(time.time())}"
+                
+                logger.info(f"Order placed successfully: {order_id}")
                 
                 # Инвалидируем кэш баланса после размещения ордера
                 account_type = get_account_type_for_category(category, prefer_unified=True)
                 self.invalidate_balance_cache(account_type=account_type)
                 
                 # Для spot: размещаем отдельные SL/TP ордера если нужно
-                if category == "spot" and (stop_loss or take_profit):
+                if category == "spot" and (stop_loss or take_profit) and order_id:
                     await self._place_spot_sl_tp(
                         symbol, side, quantity, 
-                        order_data.get('orderId'),
+                        order_id,
                         stop_loss, take_profit
                     )
                 
                 return {
                     "success": True,
-                    "order_id": order_data.get("orderId"),
+                    "order_id": order_id,
                     "symbol": symbol,
                     "side": side,
                     "type": order_type,
                     "quantity": quantity,
-                    "price": price or order_data.get("price"),
+                    "price": price or order_data.get("price") or order_data.get("avgPrice"),
                     "stop_loss": stop_loss,
                     "take_profit": take_profit,
-                    "status": order_data.get("orderStatus"),
+                    "status": order_data.get("orderStatus") or order_data.get("status") or "filled",
                     "timestamp": datetime.now().isoformat(),
-                    "message": "Order placed successfully"
+                    "message": "Order placed successfully",
+                    "raw_response": order_data  # Добавляем для отладки
                 }
             else:
-                raise Exception(f"Order failed: {response.get('retMsg', 'Unknown error')}")
+                error_msg = f"Order failed (retCode={ret_code}): {ret_msg}"
+                logger.error(error_msg)
+                raise Exception(error_msg)
                 
         except KeyError as e:
-            logger.error(f"KeyError in place_order: {e}. Response structure may be different.")
+            error_key = str(e)
+            logger.error(f"KeyError in place_order: {error_key}")
+            logger.error(f"KeyError type: {type(e)}")
+            logger.error(f"KeyError args: {e.args if hasattr(e, 'args') else 'N/A'}")
+            logger.error(f"KeyError repr: {repr(e)}")
+            # Логируем traceback для понимания где именно произошла ошибка
+            logger.error(f"Traceback: {traceback.format_exc()}")
+            logger.error(f"Category at error time: {category}")
+            logger.error(f"Order params at error time: {order_params if 'order_params' in locals() else 'N/A'}")
+            
+            # КРИТИЧНО: Если ошибка связана с category и это фьючерсы, пробуем прямой HTTP
+            if ('"category"' in error_key or "'category'" in error_key) and category in ["linear", "inverse"]:
+                logger.info("KeyError related to category for futures, trying direct HTTP as fallback")
+                try:
+                    if 'order_params' in locals():
+                        logger.info("Attempting direct HTTP fallback with order_params")
+                        response = self._place_order_direct_http(order_params)
+                        logger.info("Direct HTTP fallback successful")
+                        # Продолжаем обработку ответа
+                        ret_code = response.get("retCode")
+                        if ret_code == 0:
+                            result = response.get("result")
+                            if isinstance(result, list) and len(result) > 0:
+                                order_data = result[0]
+                            elif isinstance(result, dict):
+                                order_data = result
+                            else:
+                                raise Exception("Unexpected result format")
+                            order_id = order_data.get("orderId") or order_data.get("order_id")
+                            return {
+                                "success": True,
+                                "order_id": order_id,
+                                "symbol": symbol,
+                                "side": side,
+                                "type": order_type,
+                                "quantity": quantity,
+                                "message": "Order placed successfully via direct HTTP fallback"
+                            }
+                except Exception as fallback_err:
+                    logger.error(f"Direct HTTP fallback also failed: {fallback_err}", exc_info=True)
+            
+            # Если не удалось исправить через fallback, возвращаем ошибку
             return {
                 "success": False,
-                "error": f"KeyError: {str(e)}",
-                "message": f"Failed to place order: KeyError accessing {str(e)}. Check API response format."
+                "error": f"KeyError: {error_key}",
+                "message": f"Failed to place order: KeyError accessing {error_key}. Check API response format.",
+                "error_type": "KeyError",
+                "error_details": {
+                    "key": error_key,
+                    "type": str(type(e)),
+                    "args": list(e.args) if hasattr(e, 'args') else []
+                }
             }
         except Exception as e:
-            logger.error(f"Error placing order: {e}", exc_info=True)
+            error_msg = str(e)
+            error_type = type(e).__name__
+            logger.error(f"Error placing order: {error_type}: {error_msg}", exc_info=True)
+            logger.error(f"Full traceback: {traceback.format_exc()}")
             return {
                 "success": False,
-                "error": str(e),
-                "message": f"Failed to place order: {str(e)}"
+                "error": error_msg,
+                "error_type": error_type,
+                "message": f"Failed to place order: {error_type}: {error_msg}",
+                "traceback": traceback.format_exc()
             }
     
     async def _place_spot_sl_tp(

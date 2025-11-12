@@ -1497,3 +1497,10 @@ def calculate_fibonacci_levels(high: float, low: float,
 
 
 
+
+
+
+
+
+
+
