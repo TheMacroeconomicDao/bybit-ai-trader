@@ -156,9 +156,15 @@
 
 **Инициализация:** 
 ```
-call_mcp_tool("memory", "open_nodes", {names: ["PROJECT_TRADER_AGENT", "COMPONENT_KNOWLEDGE_BASE", "PROMPT_CORE_INSTRUCTIONS", "MEMORY_MANAGEMENT_RULES", "SHARED_PERSON_Gyber", "CONTEXTUAL_MEMORY_SYSTEM", "CURRENT_ISSUES_TRACKING"]})
+call_mcp_tool("memory", "open_nodes", {
+    "names": ["PROJECT_TRADER_AGENT", "COMPONENT_KNOWLEDGE_BASE", "PROMPT_CORE_INSTRUCTIONS"]
+})
 ```
-**КРИТИЧНО:** Правильное имя инструмента - `open_nodes` (НЕ `mcp_memory_open_nodes`), параметр - `names` (массив строк), сервер - `memory`
+
+Правильный формат:
+- Сервер: `memory`
+- Инструмент: `open_nodes`
+- Параметр: `names` (массив строк)
 
 ---
 
