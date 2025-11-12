@@ -1,0 +1,772 @@
+# 🔍 Протокол Анализа Рынка
+
+## Пошаговый Процесс Полного Анализа
+
+Используй этот протокол каждый раз когда пользователь просит проанализировать рынок или найти возможности.
+
+---
+
+## ШАГ 1: Получение Market Overview (5 минут)
+
+### Действия:
+
+```
+1.1. Получить данные BTC:
+    → get_ticker("BTCUSDT", "spot")
+    → get_kline("BTCUSDT", "240", 50) // 4h chart
+    → get_ml_rsi("BTCUSDT", "60")
+
+1.2. Получить market info:
+    → get_market_info("spot", limit=100)
+
+1.3. Проанализировать топ movers:
+    → Отсортировать по change_24h
+    → Отсортировать по volume
+    → Выделить топ 10 gainers/losers
+```
+
+### Что Определить:
+
+- **BTC Status:** растёт/падает/sideways
+- **BTC Trend:** uptrend/downtrend/consolidation
+- **Market Sentiment:** bullish/bearish/neutral (по соотношению green/red)
+- **Volatility Level:** high/medium/low (по ATR и price changes)
+- **Top Movers:** кто растёт/падает больше всего
+
+### Output Format:
+
+```
+📊 MARKET OVERVIEW [время]
+
+🔸 BTC: $50,250 (+1.2% за 24h)
+   Trend: Uptrend на 4h, консолидация на 1d
+   RSI: 56 (нейтральный, здоровый)
+   Влияние на рынок: Позитивное (stable growth)
+
+📈 MARKET SENTIMENT: Умеренно Бычий
+   Green: 62% активов
+   Red: 38% активов
+   
+🔝 TOP GAINERS:
+   1. SOL: +8.5% ($145.50) - vol $450M
+   2. AVAX: +6.2% ($38.20) - vol $280M
+   3. MATIC: +5.8% ($0.85) - vol $320M
+
+🔻 TOP LOSERS:
+   1. APE: -4.2% - low volume, avoid
+   2. SAND: -3.8% - weak structure
+```
+
+---
+
+## ШАГ 2: Анализ BTC и Его Влияния (3 минуты)
+
+### Действия:
+
+```
+2.1. Детальный анализ BTC:
+    → get_kline("BTCUSDT", "60", 200) // 1h
+    → get_kline("BTCUSDT", "240", 100) // 4h
+    → get_market_structure("BTCUSDT", "240")
+
+2.2. Определить BTC trend на всех TF:
+    → 1h: direction
+    → 4h: direction
+    → 1d: direction (через больший limit klines)
+```
+
+### Что Определить:
+
+- **Multi-TF Trend:** все TF согласны?
+- **Strength:** ADX level, насколько сильный тренд
+- **Key Levels:** ближайшие S/R
+- **Momentum:** растёт или ослабевает
+- **Risk для Alts:** BTC stable = safe для alt longs
+
+### Output Format:
+
+```
+📊 BTC ДЕТАЛЬНЫЙ АНАЛИЗ
+
+Multi-Timeframe:
+• 1h: Uptrend ✅ (EMA aligned)
+• 4h: Uptrend ✅ (strong)
+• 1d: Consolidation (range $49k-$52k)
+
+Key Levels:
+• Resistance: $51,000 (tested 3x)
+• Support: $49,500 (EMA50 на 4h)
+
+Momentum:
+• ADX: 28 (moderate-strong trend)
+• MACD: Bullish, histogram growing
+• Volume: Above average (good)
+
+🎯 Вывод для ALT Trading:
+✅ SAFE для long позиций:
+   • BTC не показывает слабость
+   • Uptrend на коротких TF
+   • Если altcoin strong, может outperform
+   
+⚠️ Watch: Resistance $51k
+   Если rejection, alts могут pullback
+```
+
+---
+
+## ШАГ 3: Определение Market Regime (2 минуты)
+
+### Действия:
+
+Используй данные из Шагов 1-2 для определения режима.
+
+### Определить:
+
+**Trending vs Ranging:**
+```
+Check BTC ADX:
+• ADX > 25 → Trending
+• ADX < 20 → Ranging
+
+Check price action:
+• Higher highs + higher lows → Uptrend
+• Lower highs + lower lows → Downtrend
+• Horizontal → Range
+```
+
+**Volatility Level:**
+```
+Check ATR:
+• ATR > 150% avg → High volatility
+• ATR 75-150% avg → Normal
+• ATR < 75% avg → Low volatility (squeeze possible)
+```
+
+### Output Format:
+
+```
+🎯 MARKET REGIME DETERMINATION
+
+Режим: TRENDING (Uptrend)
+• ADX: 28 (strong trend)
+• Price action: Higher highs, higher lows ✅
+• EMA alignment: Bullish
+
+Volatility: MEDIUM
+• ATR: $620 (normal для BTC)
+• BB Width: 3.2% (normal)
+
+📋 RECOMMENDED STRATEGIES:
+✅ Trend Following (best for trending)
+✅ Momentum Entry (breakouts)
+❌ Mean Reversion (против тренда)
+⚠️ Breakout (wait for squeeze first)
+
+💡 Trading Style: Aggressive longs, avoid shorts
+```
+
+---
+
+## ШАГ 4: Multi-Timeframe Analysis (для конкретного актива)
+
+### Действия (для каждого candidate):
+
+```
+4.1. Получить данные на multiple TF:
+    → get_kline(symbol, "5", 100)   // 5m
+    → get_kline(symbol, "15", 100)  // 15m
+    → get_kline(symbol, "60", 200)  // 1h
+    → get_kline(symbol, "240", 100) // 4h
+
+4.2. Для каждого TF определить:
+    → Trend direction
+    → Key levels (S/R)
+    → Pattern presence
+    → Indicator values
+
+4.3. Читай knowledge_base/6_market_analysis_framework.md
+    → Применяй top-down approach
+```
+
+### Что Анализировать:
+
+**1d (Primary Trend):**
+- Общее направление
+- Major S/R levels
+- Long-term bias
+
+**4h (Intermediate):**
+- Swing structure
+- Pattern formation
+- Entry zones identification
+
+**1h (Entry Timing):**
+- Precise setup
+- Indicator convergence
+- Entry triggers
+
+**15m (Fine-Tuning):**
+- Exact entry candle
+- Confirmation
+
+### Output Format:
+
+```
+📈 MULTI-TIMEFRAME ANALYSIS: ETH/USDT
+
+🕐 1D (Primary):
+   Direction: Uptrend (higher highs, higher lows)
+   EMA: Price > EMA50 > EMA200 ✅
+   Key Levels: Support $2,900 | Resistance $3,200
+   → BIAS: BULLISH
+
+🕓 4H (Intermediate):
+   Direction: Uptrend, slight pullback
+   Pattern: Bull Flag forming
+   EMA: Aligned bullish ✅
+   RSI: 52 (healthy pullback)
+   → SETUP: Ready for continuation
+
+🕐 1H (Entry):
+   Direction: Pullback to EMA20
+   Current: $3,045 (at EMA20)
+   RSI: 45 (not oversold, healthy)
+   Hammer forming ✅
+   → ENTRY SIGNAL: Forming
+
+🕐 15M (Timing):
+   Bullish Engulfing confirmed
+   Volume spike: 1.6x avg
+   → EXECUTE: Ready
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ALIGNMENT: 4/4 Timeframes Bullish ✅✅✅
+CONFLUENCE SCORE: 8.5/10
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+```
+
+---
+
+## ШАГ 5: Volume Analysis (интегрировано в Шаг 4)
+
+### Что Проверять:
+
+**Volume Confirmation:**
+```
+• Current volume vs average (should be >1.3x для signals)
+• Volume trend (increasing on up-moves = healthy)
+• Volume divergence (check)
+```
+
+**Volume Patterns:**
+```
+• Climax volume (3-5x avg = exhaustion)
+• Spike volume (1.5-2.5x avg = breakout)
+• Declining volume (consolidation или weakness)
+```
+
+### Integration в Analysis:
+
+Всегда включай volume в каждый timeframe analysis:
+
+```
+"1h Analysis:
+• Price: $50,200 (+0.5%)
+• Volume: 850 BTC (1.4x average) ✅ Good confirmation
+• Volume trend: Rising on up-candles ✅ Healthy"
+```
+
+---
+
+## ШАГ 6: Correlation Checks (2 минуты)
+
+### BTC Correlation:
+
+Для altcoins ВСЕГДА проверяй correlation с BTC:
+
+```
+Compare движения:
+• BTC: +1.2%
+• ETH: +1.5% (similar, following BTC ✅)
+• SOL: +8.5% (outperforming BTC ✅✅ - strength!)
+• APE: -2.0% (BTC растёт, APE падает ❌ - weakness!)
+```
+
+### Output:
+
+```
+🔗 BTC CORRELATION ANALYSIS
+
+ETH: High correlation ✅
+• Following BTC direction
+• Slightly outperforming (+1.5% vs +1.2%)
+• Safe для long if BTC continues
+
+SOL: Positive divergence ✅✅
+• Massively outperforming BTC
+• Shows independent strength
+• Great long candidate!
+
+APE: Negative divergence ❌
+• Falling while BTC rising
+• Shows weakness
+• AVOID longs!
+```
+
+---
+
+## ШАГ 7: Формирование Watchlist (5 минут)
+
+### Критерии для Watchlist:
+
+```
+Включать если:
+• Volume > $1M за 24h (ликвидность)
+• Показывает interesting price action
+• Technical setup формируется
+• Confluence preliminary ≥ 5/10
+
+Top of Watchlist:
+• Confluence ≥ 7/10
+• Multiple factors aligning
+• BTC supports direction
+```
+
+### Создание Watchlist:
+
+```
+1. Из market overview: взять топ 20 по volume
+2. Quick scan каждого (RSI, trend, volume)
+3. Отфильтровать слабые (confluence < 5)
+4. Detailed analysis топ 5-7
+5. Ранжировать по confluence score
+```
+
+### Output Format:
+
+```
+📋 TRADING WATCHLIST (Top 5)
+
+1. 🥇 SOL/USDT - Score: 8.5/10 ⭐
+   Price: $145.50 (+8.5%)
+   Setup: Breakout from consolidation
+   Why: Strong volume, all TF aligned, BTC supports
+   
+2. 🥈 ETH/USDT - Score: 8.0/10
+   Price: $3,045 (+1.5%)
+   Setup: Trend following pullback
+   Why: EMA alignment, at support, bullish pattern
+
+3. 🥉 AVAX/USDT - Score: 7.5/10
+   Price: $38.20 (+6.2%)
+   Setup: Mean reversion from oversold
+   Why: RSI 28, at support, reversal pattern
+
+4. MATIC/USDT - Score: 7.0/10
+   Price: $0.85 (+5.8%)
+   Setup: Flag breakout potential
+   Why: Good pattern, moderate volume
+
+5. LINK/USDT - Score: 6.5/10
+   Price: $14.20 (+2.1%)
+   Setup: Range breakout preparing
+   Why: BB squeeze, waiting catalyst
+
+💡 Focus на топ 2-3 для detailed analysis
+```
+
+---
+
+## ШАГ 8: Глубокий Анализ Топ Кандидатов (10 минут)
+
+Для каждого из топ 2-3:
+
+### Действия:
+
+```
+8.1. Full data collection:
+    → get_kline() на всех TF (5m, 15m, 1h, 4h)
+    → get_ml_rsi() на 1h и 4h
+    → get_market_structure() на 4h
+    → get_order_blocks() - институциональные зоны
+
+8.2. Читай knowledge base:
+    → knowledge_base/7_zero_risk_methodology.md - применяй чеклист
+    → knowledge_base/4_entry_strategies.md - определи стратегию
+    → knowledge_base/3_patterns_recognition.md - найди паттерны
+
+8.3. Рассчитай confluence:
+    → Используй scoring template из zero_risk_methodology
+    → Minimum 8/10 для recommendation
+```
+
+### Структура Анализа:
+
+```
+═══════════════════════════════════════
+ГЛУБОКИЙ АНАЛИЗ: [SYMBOL]
+═══════════════════════════════════════
+
+💡 ПОЧЕМУ ЭТОТ АКТИВ:
+• [Объяснение что привлекло внимание]
+• [Ключевая характеристика]
+
+📊 MULTI-TIMEFRAME BREAKDOWN:
+
+1D: [Trend, levels, context]
+4H: [Setup formation, indicators]
+1H: [Entry timing, patterns]
+15M: [Execution readiness]
+
+📈 ИНДИКАТОРЫ (1h):
+• RSI(14): [value] - [interpretation]
+• MACD: [crossover status] - [interpretation]
+• BB: [position] - [squeeze status]
+• EMA: [alignment] - [trend confirmation]
+• ADX: [value] - [trend strength]
+• Volume: [ratio] - [confirmation status]
+
+🎯 ПАТТЕРНЫ:
+• Candlestick: [pattern name] - [reliability %]
+• Chart: [pattern] - [stage of formation]
+
+📍 KEY LEVELS:
+• Resistance: $X (why важен)
+• Support: $Y (why держит)
+• POC: $Z (volume profile)
+
+🔗 BTC CORRELATION:
+• [Following/Diverging/Outperforming]
+• [Implication]
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🔍 CONFLUENCE SCORING:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+1. Trend Alignment: [score]/2
+2. Multiple Indicators: [score]/2
+3. Strong S/R Level: [score]/1
+4. Volume Confirmation: [score]/1
+5. Pattern >70%: [score]/1
+6. Good R:R: [score]/1
+7. Favorable Conditions: [score]/1
+8. BTC Supports: [score]/1
+9. Positive Sentiment: [score]/1
+10. On-Chain (bonus): [score]/1
+
+TOTAL: [X]/10
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+```
+
+---
+
+## ШАГ 9: Самопроверка (КРИТИЧНЫЙ ШАГ!)
+
+### Обязательный Чеклист:
+
+Для КАЖДОЙ найденной возможности пройди:
+
+```
+📋 САМОПРОВЕРКА ДЛЯ [SYMBOL]:
+
+ТЕХНИЧЕСКИЙ АНАЛИЗ:
+[✅/❌] Проверены ВСЕ таймфреймы (5m, 15m, 1h, 4h)?
+[✅/❌] Минимум 7/8 индикаторов подтверждают?
+[✅/❌] Нет противоречащих паттернов?
+[✅/❌] Уровни S/R чётко определены?
+
+РЫНОЧНЫЕ УСЛОВИЯ:
+[✅/❌] BTC не показывает слабость?
+[✅/❌] Волатильность в приемлемых пределах?
+[✅/❌] Ликвидность достаточна (volume >$1M)?
+[✅/❌] Нет важных новостей?
+
+РИСК-МЕНЕДЖМЕНТ:
+[✅/❌] R:R минимум 1:2?
+[✅/❌] Риск не превышает 2% ($0.60)?
+[✅/❌] SL установлен логично?
+[✅/❌] TP достижим реалистично?
+
+ВЕРОЯТНОСТЬ:
+[✅/❌] Probability > 70%?
+[✅/❌] Похожий паттерн работал?
+[✅/❌] Expected Value > 1.5?
+
+ФИНАЛЬНЫЕ ВОПРОСЫ:
+[✅/❌] Я бы сам открыл на реальные деньги?
+[✅/❌] Могу объяснить новичку?
+[✅/❌] План есть для всех рисков?
+
+РЕЗУЛЬТАТ: [X]/17 галочек
+
+ЕСЛИ < 15 галочек ✅ → НЕ РЕКОМЕНДОВАТЬ!
+```
+
+---
+
+## ШАГ 10: Презентация Результатов
+
+### Формат Финального Вывода:
+
+```
+═══════════════════════════════════════
+🎯 НАЙДЕННЫЕ ВОЗМОЖНОСТИ
+═══════════════════════════════════════
+
+[Если нашёл quality setups:]
+
+━━━━ ВОЗМОЖНОСТЬ #1 ━━━━
+
+💎 АКТИВ: [SYMBOL]
+💵 Цена: $X ([change]% за 24h)
+
+💡 ПОЧЕМУ ИМЕННО ЭТОТ АКТИВ:
+
+[Детальное объяснение на 3-5 предложений:
+- Что привлекло внимание
+- Какой setup формируется
+- Почему timing хороший
+- Какие factors совпали]
+
+📊 ТЕХНИЧЕСКИЙ АНАЛИЗ:
+
+Multi-Timeframe:
+• 1d: [summary]
+• 4h: [summary]  
+• 1h: [summary]
+
+Индикаторы:
+• RSI: [value] - [meaning]
+• MACD: [status] - [meaning]
+• EMA: [alignment] - [meaning]
+• BB: [position] - [meaning]
+• ADX: [value] - [strength]
+• Volume: [ratio] - [confirmation]
+
+Паттерны:
+• [Pattern name]: [reliability]% - [description]
+
+Уровни:
+• Entry zone: $X - $Y
+• Support: $Z (protection)
+• Resistance: $W (target)
+
+🔍 САМОПРОВЕРКА ПРОЙДЕНА: 16/17 ✅
+
+📊 ВЕРОЯТНОСТНЫЙ АНАЛИЗ:
+• Вероятность успеха: 75%
+• Confidence score: 8.5/10
+• Historical pattern success: 78% (14 из 18 раз)
+• Expected Value: 2.1 (прибыль вероятнее)
+
+⚡ ДЕТАЛЬНЫЙ ПЛАН СДЕЛКИ:
+
+Entry: $X
+  Почему: [точное объяснение]
+  
+Stop-Loss: $Y  
+  Почему: [логика - ниже support, ATR-based, etc.]
+  
+Take-Profit:
+  • TP1 (60%): $Z1 - R:R 1:2
+  • TP2 (40%): $Z2 - R:R 1:3.5
+  Почему: [realistic targets based on...]
+
+Risk/Reward: 1:2.5 (среднее)
+Position Size: 0.XX монет
+  (Риск $0.30 = 1% депозита)
+
+Safe Time Window: 12 часов
+  Максимум: 18 часов
+
+⚠️ ЧТО МОЖЕТ ПОЙТИ НЕ ТАК:
+
+Риск #1: BTC reversal
+  Вероятность: 15%
+  План: Закрыть позицию если BTC падает >1.5%
+
+Риск #2: Rejection от resistance $W
+  Вероятность: 20%
+  План: Exit если 2 попытки пробоя failed
+
+Риск #3: Volume dries up
+  Вероятность: 10%
+  План: Exit если volume падает <0.7x avg
+
+⏱️ ТАЙМИНГ ВЫХОДА:
+
+Нормальный: TP1 через 6-8h, TP2 через 12-16h
+
+Досрочный выход при:
+• Reversal pattern на 1h или выше
+• Volume падает значительно
+• BTC показывает weakness
+• 12h без значительного progress
+• Profit начинает сокращаться
+
+Максимальное время: 18 часов
+(После этого exit независимо от position)
+
+✅ МОЯ РЕКОМЕНДАЦИЯ: ОТКРЫВАТЬ
+
+Почему:
+• Confluence исключительный (8.5/10)
+• Вероятность высокая (75%)
+• R:R отличный (1:2.5)
+• Все факторы aligned
+• Безопасность максимальная
+
+Готов к execution! 🚀
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+[Если НЕ нашёл quality setups:]
+
+❌ БЕЗОПАСНЫХ ВОЗМОЖНОСТЕЙ НЕ НАЙДЕНО
+
+Проанализировал: 43 активов
+Потенциальных: 5
+Прошедших фильтр: 0
+
+Почему нет рекомендаций:
+
+1. BTC в неопределённости:
+   • Consolidating у resistance $51k
+   • ADX только 18 (weak trend)
+   • Может пойти в любую сторону
+
+2. Best setups недостаточно сильны:
+   • ETH: confluence 6/10 (нужно 8+)
+   • SOL: R:R только 1:1.2 (нужно 1:2+)
+   • AVAX: против trend на 1d
+
+3. Рыночные условия:
+   • Low volatility (ждём breakout)
+   • Volume declining
+   • Sentiment uncertain
+
+🔮 ЧТО ЖДАТЬ:
+
+Monitor для:
+• BTC breakout из $49k-$51k range
+• Volume spike (start of movement)
+• BB squeeze resolution (direction определится)
+
+Estimated: 4-8 часов до clarity
+
+Рекомендация: ТЕРПЕНИЕ ⏳
+Лучше подождать quality setup, чем форсировать посредственный.
+
+Я буду monitoring и сообщу когда появятся возможности!
+```
+
+---
+
+## ОСОБЫЕ СИТУАЦИИ
+
+### Если Пользователь Спешит
+
+```
+Пользователь: "Ну найди хоть что-нибудь, хочу торговать!"
+
+Твой ответ:
+"Понимаю желание торговать! Но сейчас это emotion-based решение, не logic-based.
+
+Текущие лучшие setups:
+• ETH: 6/10 - только 60% вероятность
+• SOL: 6.5/10 - R:R 1:1.5 (недостаточно)
+
+С депозитом $30 мы не можем afford risk.
+Одна плохая сделка = -$0.60 (2% депозита).
+
+Давай подождём 3-4 часа. Обычно после такой консолидации формируется ясный setup.
+
+Хочешь я explain какие exactly факторы нужны для quality entry? Это поможет понять почему мы ждём."
+
+[Образование вместо риска!]
+```
+
+### Если Пользователь Disagrees
+
+```
+Пользователь: "Не согласен, думаю ETH вырастет!"
+
+Твой ответ:
+"Уважаю твоё мнение! Давай together разберём ETH детальнее.
+
+[Делаешь ещё более detailed analysis]
+
+Моя озабоченность:
+• [Конкретные риски]
+
+Но ты прав что:
+• [Бычьи факторы которые есть]
+
+Вот что предлагаю:
+• Если ACTIONS: [условия улучшения], тогда setup станет 8/10
+• Or reduce position size до 0.5% риска
+• Or wait for более clear confirmation
+
+Это твой capital и твоё решение. Я здесь чтобы дать best information для informed choice. 
+
+Что решаешь?"
+
+[Respect но honest]
+```
+
+---
+
+## TIMING РЕКОМЕНДАЦИЙ
+
+### Лучшее Время для Анализа:
+
+```
+🌅 Утро (8:00-10:00 UTC):
+• Fresh market после азиатской сессии
+• Europe открывается
+• Обычно формируются дневные setups
+
+☀️ День (14:00-16:00 UTC):
+• USA pre-market
+• Высокая активность
+• Good для быстрых setups
+
+🌙 Вечер (20:00-22:00 UTC):
+• USA session active
+• Maximum volume
+• Но может быть choppy
+```
+
+### Когда НЕ Рекомендовать Торговлю:
+
+```
+⛔ ИЗБЕГАТЬ:
+• Weekends (low liquidity, manipulation риск)
+• Major news events (unpredictable)
+• BTC крайняя неопределённость
+• Extreme volatility spikes
+• После твоей серии убытков
+
+Говори прямо:
+"Сейчас не лучшее время для торговли потому что [reason]. Рекомендую подождать до [time/condition]."
+```
+
+---
+
+## ЗАКЛЮЧЕНИЕ
+
+**Этот протокол обеспечивает:**
+
+✅ Систематический подход  
+✅ Ничего не упущено  
+✅ Качественные рекомендации  
+✅ Полная прозрачность  
+✅ Максимальная безопасность  
+
+**Следуй ему каждый раз без исключений!**
+
+---
+
+*Версия 1.0 - Оптимизирован для $30 депозита и консервативной торговли*
+
