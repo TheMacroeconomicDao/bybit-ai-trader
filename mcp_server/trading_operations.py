@@ -66,12 +66,21 @@ class TradingOperations:
         
         try:
             # Параметры ордера
+            # Для spot используем точное форматирование количества
+            if category == "spot":
+                # Для spot: qty должно быть строкой с правильной точностью
+                # Используем форматирование до 8 знаков после запятой
+                qty_str = f"{quantity:.8f}".rstrip('0').rstrip('.')
+            else:
+                # Для futures: стандартное форматирование
+                qty_str = str(quantity)
+            
             order_params = {
                 "category": category,
                 "symbol": symbol,
                 "side": side,
                 "orderType": order_type,
-                "qty": str(quantity)
+                "qty": qty_str
             }
             
             # Добавляем цену для Limit
@@ -86,10 +95,27 @@ class TradingOperations:
                     order_params["takeProfit"] = str(take_profit)
             
             # Размещаем ордер
+            logger.debug(f"Order params: {order_params}")
             response = self.session.place_order(**order_params)
+            logger.debug(f"API response: {response}")
             
-            if response["retCode"] == 0:
-                order_data = response["result"]
+            # Проверяем формат ответа
+            if not isinstance(response, dict):
+                raise Exception(f"Unexpected response type: {type(response)}")
+            
+            # Проверяем наличие retCode
+            if "retCode" not in response:
+                # Возможно, это другой формат ответа
+                logger.error(f"Response missing retCode: {response}")
+                raise Exception(f"Invalid API response format: {response}")
+            
+            ret_code = response.get("retCode")
+            
+            if ret_code == 0:
+                order_data = response.get("result", {})
+                if not order_data:
+                    raise Exception(f"Response missing result: {response}")
+                    
                 logger.info(f"Order placed successfully: {order_data.get('orderId')}")
                 
                 # Для spot: размещаем отдельные SL/TP ордера если нужно
@@ -115,7 +141,10 @@ class TradingOperations:
                     "message": "Order placed successfully"
                 }
             else:
-                raise Exception(f"Order failed: {response.get('retMsg', 'Unknown error')}")
+                ret_msg = response.get('retMsg', 'Unknown error')
+                ret_ext_info = response.get('retExtInfo', {})
+                logger.error(f"Order failed: retCode={ret_code}, retMsg={ret_msg}, retExtInfo={ret_ext_info}")
+                raise Exception(f"Order failed (retCode={ret_code}): {ret_msg}")
                 
         except Exception as e:
             logger.error(f"Error placing order: {e}", exc_info=True)
