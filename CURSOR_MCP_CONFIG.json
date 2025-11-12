@@ -9,7 +9,9 @@
         "BYBIT_API_KEY": "V84NJog5v9bM5k6fRn",
         "BYBIT_API_SECRET": "RYZ1JeyGsWhtjigF01rKDYzq3lRbvlxvU89L",
         "BYBIT_TESTNET": "false",
-        "DEBUG": "false"
+        "DEBUG": "false",
+        "MCP_HTTP_PORT": "8081",
+        "AUTO_OPEN_WEBUI": "false"
       }
     },
     "bybit-trading": {
@@ -20,5 +22,9 @@
     }
   }
 }
+
+
+
+
 
 

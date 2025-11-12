@@ -12,10 +12,16 @@ from datetime import datetime, timedelta
 
 import ccxt.async_support as ccxt
 from loguru import logger
+from cache_manager import get_cache_manager
 
 
 class BybitClient:
     """Клиент для работы с Bybit API"""
+    
+    # Кеш тикеров (класс-уровень для всех экземпляров)
+    _tickers_cache: Dict[str, List[Dict[str, Any]]] = {}
+    _cache_timestamps: Dict[str, datetime] = {}
+    _cache_ttl = timedelta(seconds=30)  # 30 секунд кеш
     
     def __init__(self, api_key: str, api_secret: str, testnet: bool = False):
         """
@@ -170,7 +176,7 @@ class BybitClient:
     
     async def get_all_tickers(self, market_type: str = "spot", sort_by: str = "volume") -> List[Dict[str, Any]]:
         """
-        Получить все торговые пары
+        Получить все торговые пары с кешированием
         
         Args:
             market_type: "spot" или "futures"
@@ -179,6 +185,16 @@ class BybitClient:
         Returns:
             Массив всех торговых пар с базовой информацией
         """
+        # Проверяем кеш
+        cache_key = f"{market_type}_{sort_by}"
+        now = datetime.now()
+        
+        if (cache_key in self._tickers_cache and 
+            cache_key in self._cache_timestamps and
+            now - self._cache_timestamps[cache_key] < self._cache_ttl):
+            logger.debug(f"Using cached tickers for {cache_key}")
+            return self._tickers_cache[cache_key]
+        
         logger.info(f"Getting all {market_type} tickers, sorted by {sort_by}")
         
         try:
@@ -207,6 +223,11 @@ class BybitClient:
                 ticker_list.sort(key=lambda x: x['change_24h'], reverse=True)
             else:  # name
                 ticker_list.sort(key=lambda x: x['symbol'])
+            
+            # Обновляем кеш
+            self._tickers_cache[cache_key] = ticker_list
+            self._cache_timestamps[cache_key] = now
+            logger.debug(f"Cached tickers for {cache_key}")
             
             return ticker_list
             
@@ -248,6 +269,7 @@ class BybitClient:
     async def get_ohlcv(self, symbol: str, timeframe: str = "1h", limit: int = 100) -> List[List]:
         """
         Получить OHLCV данные (свечи)
+        С кэшированием для ускорения повторных запросов
         
         Args:
             symbol: Торговая пара
@@ -257,12 +279,63 @@ class BybitClient:
         Returns:
             Массив OHLCV данных
         """
+        # Проверяем кэш
+        cache = get_cache_manager()
+        cached_result = cache.get("get_ohlcv", symbol=symbol, timeframe=timeframe, limit=limit)
+        if cached_result is not None:
+            logger.debug(f"Cache hit for get_ohlcv: {symbol} {timeframe}")
+            return cached_result
+        
         try:
             ohlcv = await self.exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
+            
+            # Сохраняем в кэш (TTL зависит от таймфрейма: меньшие таймфреймы = короче кэш)
+            ttl_map = {
+                "1m": 10,   # 10 секунд для 1m
+                "5m": 30,   # 30 секунд для 5m
+                "15m": 60,  # 1 минута для 15m
+                "1h": 120,  # 2 минуты для 1h
+                "4h": 300,  # 5 минут для 4h
+                "1d": 600   # 10 минут для 1d
+            }
+            ttl = ttl_map.get(timeframe, 60)  # По умолчанию 60 секунд
+            
+            cache.set("get_ohlcv", ohlcv, ttl=ttl, symbol=symbol, timeframe=timeframe, limit=limit)
+            
             return ohlcv
             
         except Exception as e:
             logger.error(f"Error getting OHLCV: {e}", exc_info=True)
+            raise
+    
+    async def get_orderbook(self, symbol: str, limit: int = 25) -> Dict[str, Any]:
+        """
+        Получить orderbook (глубину рынка) для анализа ликвидности
+        
+        Args:
+            symbol: Торговая пара
+            limit: Количество уровней (25, 50, 100, 200)
+            
+        Returns:
+            Orderbook данные с bids и asks
+        """
+        logger.info(f"Getting orderbook for {symbol} (limit={limit})")
+        
+        try:
+            orderbook = await self.exchange.fetch_order_book(symbol, limit=limit)
+            
+            return {
+                "symbol": symbol,
+                "bids": orderbook['bids'],  # [[price, size], ...]
+                "asks": orderbook['asks'],  # [[price, size], ...]
+                "timestamp": datetime.now().isoformat(),
+                "bid_price": orderbook['bids'][0][0] if orderbook['bids'] else None,
+                "ask_price": orderbook['asks'][0][0] if orderbook['asks'] else None,
+                "spread": (orderbook['asks'][0][0] - orderbook['bids'][0][0]) if (orderbook['asks'] and orderbook['bids']) else None
+            }
+            
+        except Exception as e:
+            logger.error(f"Error getting orderbook: {e}", exc_info=True)
             raise
     
     async def get_account_info(self) -> Dict[str, Any]:
@@ -279,28 +352,23 @@ class BybitClient:
             balance = await self.exchange.fetch_balance()
             
             # Получаем открытые позиции
-            try:
-                positions = await self.get_open_positions()
-            except Exception as pos_error:
-                logger.warning(f"Could not fetch positions: {pos_error}")
-                positions = []
+            positions = await self.get_open_positions()
             
             # Расчёт risk metrics
-            total_equity = balance.get('total', {}).get('USDT', 0) if isinstance(balance.get('total'), dict) else 0
-            free_balance = balance.get('free', {}).get('USDT', 0) if isinstance(balance.get('free'), dict) else 0
+            total_equity = balance['total'].get('USDT', 0)
             used_margin = sum(p.get('margin', 0) for p in positions)
             unrealized_pnl = sum(p.get('unrealized_pnl', 0) for p in positions)
             
             return {
                 "balance": {
-                    "total": float(total_equity) if total_equity else 0.0,
-                    "available": float(free_balance) if free_balance else 0.0,
-                    "used_margin": float(used_margin),
-                    "unrealized_pnl": float(unrealized_pnl)
+                    "total": total_equity,
+                    "available": balance['free'].get('USDT', 0),
+                    "used_margin": used_margin,
+                    "unrealized_pnl": unrealized_pnl
                 },
                 "positions": positions,
                 "risk_metrics": {
-                    "total_risk_pct": (used_margin / total_equity * 100) if total_equity > 0 else 0.0,
+                    "total_risk_pct": (used_margin / total_equity * 100) if total_equity > 0 else 0,
                     "positions_count": len(positions),
                     "max_drawdown": "N/A"  # TODO: Calculate from trade history
                 }
@@ -308,22 +376,7 @@ class BybitClient:
             
         except Exception as e:
             logger.error(f"Error getting account info: {e}", exc_info=True)
-            # Возвращаем пустую структуру вместо исключения
-            return {
-                "balance": {
-                    "total": 0.0,
-                    "available": 0.0,
-                    "used_margin": 0.0,
-                    "unrealized_pnl": 0.0
-                },
-                "positions": [],
-                "risk_metrics": {
-                    "total_risk_pct": 0.0,
-                    "positions_count": 0,
-                    "max_drawdown": "N/A"
-                },
-                "error": str(e)
-            }
+            raise
     
     async def get_open_positions(self) -> List[Dict[str, Any]]:
         """
@@ -337,34 +390,28 @@ class BybitClient:
         try:
             positions = await self.exchange.fetch_positions()
             
-            # Фильтруем только открытые позиции и обрабатываем возможные отсутствующие ключи
-            open_positions = []
-            for p in positions:
-                try:
-                    contracts = p.get('contracts', 0) or p.get('size', 0) or 0
-                    if contracts > 0:
-                        open_positions.append({
-                            "symbol": p.get('symbol', 'UNKNOWN'),
-                            "side": p.get('side', 'unknown'),
-                            "size": float(contracts),
-                            "entry_price": float(p.get('entryPrice', 0) or p.get('entry_price', 0) or 0),
-                            "current_price": float(p.get('markPrice', 0) or p.get('mark_price', 0) or p.get('lastPrice', 0) or 0),
-                            "unrealized_pnl": float(p.get('unrealizedPnl', 0) or p.get('unrealized_pnl', 0) or 0),
-                            "unrealized_pnl_pct": float(p.get('percentage', 0) or p.get('unrealizedPnlPercentage', 0) or 0),
-                            "leverage": float(p.get('leverage', 1) or 1),
-                            "margin": float(p.get('initialMargin', 0) or p.get('initial_margin', 0) or 0),
-                            "liquidation_price": float(p.get('liquidationPrice', 0) or p.get('liquidation_price', 0) or 0)
-                        })
-                except (KeyError, TypeError, ValueError) as parse_error:
-                    logger.warning(f"Error parsing position: {parse_error}, position data: {p}")
-                    continue
+            # Фильтруем только открытые позиции
+            open_positions = [
+                {
+                    "symbol": p['symbol'],
+                    "side": p['side'],
+                    "size": p['contracts'],
+                    "entry_price": p['entryPrice'],
+                    "current_price": p['markPrice'],
+                    "unrealized_pnl": p['unrealizedPnl'],
+                    "unrealized_pnl_pct": p['percentage'],
+                    "leverage": p['leverage'],
+                    "margin": p['initialMargin'],
+                    "liquidation_price": p['liquidationPrice']
+                }
+                for p in positions if p['contracts'] > 0
+            ]
             
             return open_positions
             
         except Exception as e:
             logger.error(f"Error getting open positions: {e}", exc_info=True)
-            # Возвращаем пустой список вместо исключения
-            return []
+            raise
     
     async def place_order(
         self,

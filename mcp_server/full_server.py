@@ -9,34 +9,22 @@ import json
 import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional
-import numpy as np
 
+import pandas as pd
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
 from mcp.types import Tool, TextContent
 from loguru import logger
 
-from trading_operations import TradingOperations
+from trading_operations import (
+    TradingOperations,
+    get_all_account_balances,
+    get_account_type_for_category
+)
 from technical_analysis import TechnicalAnalysis
 from market_scanner import MarketScanner
 from position_monitor import PositionMonitor
 from bybit_client import BybitClient
-
-
-def json_serialize(obj: Any) -> Any:
-    """Конвертировать объект в JSON-совместимый формат"""
-    if isinstance(obj, (np.integer, np.floating)):
-        return float(obj)
-    elif isinstance(obj, np.ndarray):
-        return obj.tolist()
-    elif isinstance(obj, (np.bool_, bool)):
-        return bool(obj)
-    elif isinstance(obj, dict):
-        return {k: json_serialize(v) for k, v in obj.items()}
-    elif isinstance(obj, (list, tuple)):
-        return [json_serialize(item) for item in obj]
-    else:
-        return obj
 
 
 # Настройка логирования
@@ -261,19 +249,42 @@ async def list_tools() -> List[Tool]:
         # ═══════════════════════════════════════
         
         Tool(
+            name="check_liquidity",
+            description="Проверка ликвидности актива на основе orderbook. Возвращает score (0-1) и детали ликвидности.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "symbol": {"type": "string", "description": "Торговая пара (например BTC/USDT)"}
+                },
+                "required": ["symbol"]
+            }
+        ),
+        
+        Tool(
             name="validate_entry",
-            description="Валидация точки входа с полной оценкой",
+            description="Валидация точки входа с полной оценкой (включая автоматическую проверку ликвидности)",
             inputSchema={
                 "type": "object",
                 "properties": {
                     "symbol": {"type": "string"},
                     "side": {"type": "string", "enum": ["long", "short"]},
-                    "entry_price": {"type": "number"},
+                    "entry_price": {
+                        "type": "number",
+                        "description": "Entry price (also accepts 'entry' parameter for compatibility)"
+                    },
+                    "entry": {
+                        "type": "number",
+                        "description": "Alternative parameter name for entry_price (for compatibility)"
+                    },
                     "stop_loss": {"type": "number"},
                     "take_profit": {"type": "number"},
                     "risk_pct": {"type": "number", "default": 0.01}
                 },
-                "required": ["symbol", "side", "entry_price", "stop_loss", "take_profit"]
+                "required": ["symbol", "side", "stop_loss", "take_profit"],
+                "anyOf": [
+                    {"required": ["entry_price"]},
+                    {"required": ["entry"]}
+                ]
             }
         ),
         
@@ -300,7 +311,7 @@ async def list_tools() -> List[Tool]:
                 "type": "object",
                 "properties": {
                     "category": {"type": "string", "default": "spot"},
-                    "limit": {"type": "integer", "default": 50}
+                    "limit": {"type": "string", "default": "50", "description": "Maximum number of results (1, 10, 50, 100, 200)"}
                 }
             }
         ),
@@ -322,7 +333,8 @@ async def list_tools() -> List[Tool]:
                     "price": {"type": "number"},
                     "stop_loss": {"type": "number"},
                     "take_profit": {"type": "number"},
-                    "category": {"type": "string", "default": "spot"}
+                    "category": {"type": "string", "default": "spot"},
+                    "leverage": {"type": "integer", "description": "Leverage для фьючерсов (1-125)", "minimum": 1, "maximum": 125}
                 },
                 "required": ["symbol", "side", "quantity"]
             }
@@ -446,9 +458,11 @@ async def call_tool(name: str, arguments: Any) -> List[TextContent]:
         
         # ═══ Рыночные данные ═══
         if name == "get_market_overview":
-            result = await trading_ops.get_market_overview(
-                arguments.get("market_type", "both")
-            )
+            # Исправление: "futures" -> "linear" для совместимости
+            market_type = arguments.get("market_type", "both")
+            if market_type == "futures":
+                market_type = "linear"
+            result = await trading_ops.get_market_overview(market_type)
         
         elif name == "get_all_tickers":
             result = await bybit_client.get_all_tickers(
@@ -480,7 +494,6 @@ async def call_tool(name: str, arguments: Any) -> List[TextContent]:
                 arguments["symbol"],
                 arguments.get("timeframe", "1h")
             )
-            import pandas as pd
             df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
             result = technical_analysis._detect_patterns(df)
         
@@ -490,7 +503,6 @@ async def call_tool(name: str, arguments: Any) -> List[TextContent]:
                 arguments.get("timeframe", "1h"),
                 limit=arguments.get("lookback_periods", 50)
             )
-            import pandas as pd
             df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
             result = technical_analysis._find_support_resistance(df)
         
@@ -520,70 +532,285 @@ async def call_tool(name: str, arguments: Any) -> List[TextContent]:
             )
         
         # ═══ Валидация ═══
+        elif name == "check_liquidity":
+            result = await technical_analysis.check_liquidity(
+                symbol=arguments["symbol"]
+            )
+        
         elif name == "validate_entry":
+            # Поддержка как entry_price, так и entry для совместимости
+            entry_price = arguments.get("entry_price") or arguments.get("entry")
+            if not entry_price:
+                raise ValueError("entry_price or entry is required")
+            
             result = await technical_analysis.validate_entry(
                 symbol=arguments["symbol"],
                 side=arguments["side"],
-                entry_price=arguments["entry_price"],
-                stop_loss=arguments["stop_loss"],
-                take_profit=arguments["take_profit"],
+                entry_price=float(entry_price),
+                stop_loss=float(arguments["stop_loss"]),
+                take_profit=float(arguments["take_profit"]),
                 risk_pct=arguments.get("risk_pct", 0.01)
             )
         
         # ═══ Account ═══
         elif name == "get_account_info":
-            result = await bybit_client.get_account_info()
+            # Получаем балансы со всех типов счетов (SPOT, CONTRACT, UNIFIED)
+            try:
+                # Используем вспомогательную функцию для получения всех балансов
+                all_balances = get_all_account_balances(trading_ops.session, coin="USDT")
+                
+                # Получаем позиции (пробуем через известные символы)
+                # Если нет позиций - возвращаем пустой список
+                positions = []
+                test_symbols = ["BTCUSDT", "ETHUSDT"]
+                
+                for test_symbol in test_symbols:
+                    try:
+                        test_response = trading_ops.session.get_positions(
+                            category="linear",
+                            symbol=test_symbol
+                        )
+                        if test_response.get("retCode") == 0:
+                            positions_list = test_response.get("result", {}).get("list", [])
+                            positions.extend([p for p in positions_list if float(p.get("size", 0)) != 0])
+                    except:
+                        continue
+                
+                # Фильтруем только позиции с размером > 0
+                positions = [p for p in positions if float(p.get("size", 0)) != 0]
+                
+                # Используем общий баланс (сумма всех счетов)
+                total_equity = all_balances.get("total", 0.0)
+                available = all_balances.get("available", 0.0)
+                
+                used_margin = sum(float(p.get("positionIM", 0) or 0) for p in positions)
+                unrealized_pnl = sum(float(p.get("unrealisedPnl", 0) or 0) for p in positions)
+                
+                result = {
+                    "balance": {
+                        # Детали по каждому типу счета
+                        "spot": all_balances.get("spot", {"total": 0.0, "available": 0.0, "success": False}),
+                        "contract": all_balances.get("contract", {"total": 0.0, "available": 0.0, "success": False}),
+                        "unified": all_balances.get("unified", {"total": 0.0, "available": 0.0, "success": False}),
+                        # Общий баланс (сумма всех счетов)
+                        "total": total_equity,
+                        "available": available,
+                        "used_margin": used_margin,
+                        "unrealized_pnl": unrealized_pnl
+                    },
+                    "positions": positions,
+                    "risk_metrics": {
+                        "total_risk_pct": (used_margin / total_equity * 100) if total_equity > 0 else 0,
+                        "positions_count": len(positions),
+                        "max_drawdown": "N/A"
+                    }
+                }
+            except Exception as e:
+                logger.error(f"Error in get_account_info: {e}", exc_info=True)
+                result = {
+                    "success": False,
+                    "error": str(e)
+                }
         
         elif name == "get_open_positions":
-            result = await bybit_client.get_open_positions()
+            # Используем pybit напрямую
+            # Пробуем получить все позиции через разные методы
+            try:
+                # Сначала пробуем получить через известные символы
+                # Если нет позиций - возвращаем пустой список
+                response = None
+                test_symbols = ["BTCUSDT", "ETHUSDT"]
+                
+                all_positions = []
+                for test_symbol in test_symbols:
+                    try:
+                        test_response = trading_ops.session.get_positions(
+                            category="linear",
+                            symbol=test_symbol
+                        )
+                        if test_response.get("retCode") == 0:
+                            positions_list = test_response.get("result", {}).get("list", [])
+                            all_positions.extend([p for p in positions_list if float(p.get("size", 0)) != 0])
+                    except:
+                        continue
+                
+                # Если нашли позиции - используем их
+                if all_positions:
+                    response = {"retCode": 0, "result": {"list": all_positions}}
+                else:
+                    # Если позиций нет - возвращаем пустой список
+                    response = {"retCode": 0, "result": {"list": []}}
+                
+                if response and response.get("retCode") == 0:
+                    positions_list = response.get("result", {}).get("list", [])
+                    # Фильтруем только открытые позиции
+                    open_positions = [
+                        {
+                            "symbol": p.get("symbol"),
+                            "side": p.get("side"),
+                            "size": float(p.get("size", 0)),
+                            "entry_price": float(p.get("avgPrice", 0)),
+                            "current_price": float(p.get("markPrice", 0)),
+                            "unrealized_pnl": float(p.get("unrealisedPnl", 0)),
+                            "unrealized_pnl_pct": float(p.get("unrealisedPnl", 0)) / float(p.get("positionValue", 1)) * 100 if float(p.get("positionValue", 0)) != 0 else 0,
+                            "leverage": p.get("leverage"),
+                            "margin": float(p.get("positionIM", 0)),
+                            "liquidation_price": float(p.get("liqPrice", 0))
+                        }
+                        for p in positions_list if float(p.get("size", 0)) != 0
+                    ]
+                    result = open_positions
+                else:
+                    result = {
+                        "success": False,
+                        "error": response.get("retMsg", "Unknown error")
+                    }
+            except Exception as e:
+                logger.error(f"Error in get_open_positions: {e}", exc_info=True)
+                result = {
+                    "success": False,
+                    "error": str(e)
+                }
         
         elif name == "get_order_history":
             # Используем pybit напрямую
-            limit = arguments.get("limit", 50)
-            # Конвертируем в строку если нужно
-            limit_str = str(limit) if isinstance(limit, (int, float)) else limit
-            response = trading_ops.session.get_order_history(
-                category=arguments.get("category", "spot"),
-                limit=limit_str
-            )
-            result = response.get("result", {})
+            # limit уже строка из схемы MCP
+            limit = arguments.get("limit", "50")
+            try:
+                response = trading_ops.session.get_order_history(
+                    category=arguments.get("category", "spot"),
+                    limit=limit
+                )
+                if response.get("retCode") == 0:
+                    result = response.get("result", {})
+                else:
+                    result = {
+                        "success": False,
+                        "error": response.get("retMsg", "Unknown error")
+                    }
+            except Exception as e:
+                logger.error(f"Error in get_order_history: {e}", exc_info=True)
+                result = {
+                    "success": False,
+                    "error": str(e)
+                }
         
         # ═══ Trading Operations ═══
         elif name == "place_order":
-            # Извлекаем параметры корректно
-            logger.info(f"place_order called with arguments: {arguments}")
-            result = await trading_ops.place_order(
-                symbol=str(arguments.get("symbol", "")),
-                side=str(arguments.get("side", "")),
-                order_type=str(arguments.get("order_type", "Market")),
-                quantity=float(arguments.get("quantity", 0)),
-                price=float(arguments["price"]) if arguments.get("price") else None,
-                stop_loss=float(arguments["stop_loss"]) if arguments.get("stop_loss") else None,
-                take_profit=float(arguments["take_profit"]) if arguments.get("take_profit") else None,
-                category=str(arguments.get("category", "spot"))
-            )
+            # Извлекаем параметры корректно с обработкой ошибок
+            try:
+                logger.info(f"place_order called with arguments: {arguments}")
+                logger.info(f"Arguments type: {type(arguments)}")
+                
+                # Безопасное извлечение параметров
+                symbol = str(arguments.get("symbol", "")) if arguments.get("symbol") else ""
+                side = str(arguments.get("side", "")) if arguments.get("side") else ""
+                order_type = str(arguments.get("order_type", "Market")) if arguments.get("order_type") else "Market"
+                quantity = float(arguments.get("quantity", 0)) if arguments.get("quantity") else 0.0
+                price = float(arguments.get("price")) if arguments.get("price") is not None else None
+                stop_loss = float(arguments.get("stop_loss")) if arguments.get("stop_loss") is not None else None
+                take_profit = float(arguments.get("take_profit")) if arguments.get("take_profit") is not None else None
+                category = str(arguments.get("category", "spot")) if arguments.get("category") else "spot"
+                leverage = int(arguments.get("leverage")) if arguments.get("leverage") is not None else None
+                
+                logger.info(f"Parsed params: symbol={symbol}, side={side}, qty={quantity}, category={category}")
+                
+                if not symbol or not side or quantity <= 0:
+                    result = {
+                        "success": False,
+                        "error": "Missing required parameters: symbol, side, or quantity is invalid"
+                    }
+                else:
+                    result = await trading_ops.place_order(
+                        symbol=symbol,
+                        side=side,
+                        order_type=order_type,
+                        quantity=quantity,
+                        price=price,
+                        stop_loss=stop_loss,
+                        take_profit=take_profit,
+                        category=category,
+                        leverage=leverage
+                    )
+            except KeyError as e:
+                logger.error(f"KeyError in place_order handler: {e}", exc_info=True)
+                result = {
+                    "success": False,
+                    "error": f"KeyError: {str(e)}",
+                    "message": f"Missing parameter: {str(e)}"
+                }
+            except Exception as e:
+                logger.error(f"Error in place_order handler: {e}", exc_info=True)
+                result = {
+                    "success": False,
+                    "error": str(e),
+                    "message": f"Failed to process place_order: {str(e)}"
+                }
         
         elif name == "close_position":
-            result = await trading_ops.close_position(
-                symbol=arguments["symbol"],
-                category=arguments.get("category", "linear"),
-                reason=arguments.get("reason", "Manual close")
-            )
+            try:
+                symbol = arguments.get("symbol", "")
+                if not symbol:
+                    result = {
+                        "success": False,
+                        "error": "Missing required parameter: symbol"
+                    }
+                else:
+                    result = await trading_ops.close_position(
+                        symbol=symbol,
+                        category=arguments.get("category", "linear"),
+                        reason=arguments.get("reason", "Manual close")
+                    )
+            except Exception as e:
+                logger.error(f"Error in close_position: {e}", exc_info=True)
+                result = {
+                    "success": False,
+                    "error": str(e)
+                }
         
         elif name == "modify_position":
-            result = await trading_ops.modify_position(
-                symbol=arguments["symbol"],
-                stop_loss=arguments.get("stop_loss"),
-                take_profit=arguments.get("take_profit"),
-                category=arguments.get("category", "linear")
-            )
+            try:
+                symbol = arguments.get("symbol", "")
+                if not symbol:
+                    result = {
+                        "success": False,
+                        "error": "Missing required parameter: symbol"
+                    }
+                else:
+                    result = await trading_ops.modify_position(
+                        symbol=symbol,
+                        stop_loss=arguments.get("stop_loss"),
+                        take_profit=arguments.get("take_profit"),
+                        category=arguments.get("category", "linear")
+                    )
+            except Exception as e:
+                logger.error(f"Error in modify_position: {e}", exc_info=True)
+                result = {
+                    "success": False,
+                    "error": str(e)
+                }
         
         elif name == "cancel_order":
-            result = await trading_ops.cancel_order(
-                order_id=arguments["order_id"],
-                symbol=arguments["symbol"],
-                category=arguments.get("category", "spot")
-            )
+            try:
+                order_id = arguments.get("order_id", "")
+                symbol = arguments.get("symbol", "")
+                if not order_id or not symbol:
+                    result = {
+                        "success": False,
+                        "error": "Missing required parameters: order_id or symbol"
+                    }
+                else:
+                    result = await trading_ops.cancel_order(
+                        order_id=order_id,
+                        symbol=symbol,
+                        category=arguments.get("category", "spot")
+                    )
+            except Exception as e:
+                logger.error(f"Error in cancel_order: {e}", exc_info=True)
+                result = {
+                    "success": False,
+                    "error": str(e)
+                }
         
         # ═══ Monitoring ═══
         elif name == "start_position_monitoring":
@@ -608,27 +835,56 @@ async def call_tool(name: str, arguments: Any) -> List[TextContent]:
         
         # ═══ Helper Functions ═══
         elif name == "move_to_breakeven":
-            result = await trading_ops.move_to_breakeven(
-                symbol=arguments["symbol"],
-                entry_price=arguments["entry_price"],
-                category=arguments.get("category", "linear")
-            )
+            try:
+                symbol = arguments.get("symbol", "")
+                entry_price = arguments.get("entry_price")
+                if not symbol or entry_price is None:
+                    result = {
+                        "success": False,
+                        "error": "Missing required parameters: symbol or entry_price"
+                    }
+                else:
+                    result = await trading_ops.move_to_breakeven(
+                        symbol=symbol,
+                        entry_price=float(entry_price),
+                        category=arguments.get("category", "linear")
+                    )
+            except Exception as e:
+                logger.error(f"Error in move_to_breakeven: {e}", exc_info=True)
+                result = {
+                    "success": False,
+                    "error": str(e)
+                }
         
         elif name == "activate_trailing_stop":
-            result = await trading_ops.activate_trailing_stop(
-                symbol=arguments["symbol"],
-                trailing_distance=arguments["trailing_distance"],
-                category=arguments.get("category", "linear")
-            )
+            try:
+                symbol = arguments.get("symbol", "")
+                trailing_distance = arguments.get("trailing_distance")
+                if not symbol or trailing_distance is None:
+                    result = {
+                        "success": False,
+                        "error": "Missing required parameters: symbol or trailing_distance"
+                    }
+                else:
+                    result = await trading_ops.activate_trailing_stop(
+                        symbol=symbol,
+                        trailing_distance=float(trailing_distance),
+                        category=arguments.get("category", "linear")
+                    )
+            except Exception as e:
+                logger.error(f"Error in activate_trailing_stop: {e}", exc_info=True)
+                result = {
+                    "success": False,
+                    "error": str(e)
+                }
         
         else:
             raise ValueError(f"Unknown tool: {name}")
         
-        # Возвращаем результат (конвертируем все типы в JSON-совместимые)
-        serialized_result = json_serialize(result)
+        # Возвращаем результат
         return [TextContent(
             type="text",
-            text=json.dumps(serialized_result, indent=2, ensure_ascii=False)
+            text=json.dumps(result, indent=2, ensure_ascii=False)
         )]
         
     except Exception as e:

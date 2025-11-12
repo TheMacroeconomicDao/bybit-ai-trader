@@ -3,9 +3,9 @@ Market Scanner
 Сканирование рынка для поиска торговых возможностей
 """
 
+import asyncio
 from typing import Dict, List, Any, Optional
 from loguru import logger
-import asyncio
 
 
 class MarketScanner:
@@ -56,46 +56,70 @@ class MarketScanner:
             
             filtered.append(ticker)
         
-        # Детальный анализ для отфильтрованных
-        opportunities = []
+        # Детальный анализ для отфильтрованных с параллелизацией
+        # Ограничиваем количество для анализа (топ по объёму)
+        candidates = filtered[:min(limit * 3, 50)]  # Максимум 50 кандидатов
         
-        for ticker in filtered[:limit * 3]:  # Анализируем больше, чтобы выбрать лучшие
-            try:
-                analysis = await self.ta.analyze_asset(
-                    ticker['symbol'],
-                    timeframes=["1h", "4h"],
-                    include_patterns=True
-                )
-                
-                # Проверка индикаторных критериев
-                indicator_criteria = criteria.get('indicators', {})
-                if not self._check_indicator_criteria(analysis, indicator_criteria):
-                    continue
-                
-                # Scoring
-                score = self._calculate_opportunity_score(analysis, ticker)
-                
-                # Entry plan
-                entry_plan = self._generate_entry_plan(analysis, ticker)
-                
-                opportunities.append({
-                    "symbol": ticker['symbol'],
-                    "current_price": ticker['price'],
-                    "change_24h": ticker['change_24h'],
-                    "volume_24h": ticker['volume_24h'],
-                    "score": score,
-                    "probability": self._estimate_probability(score, analysis),
-                    "entry_plan": entry_plan,
-                    "analysis": analysis,
-                    "why": self._generate_reasoning(analysis, score)
-                })
-                
-            except Exception as e:
-                logger.warning(f"Error analyzing {ticker['symbol']}: {e}")
+        # Параллельный анализ с ограничением одновременных запросов
+        semaphore = asyncio.Semaphore(5)  # Максимум 5 параллельно
+        
+        async def analyze_ticker(ticker: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+            """Анализ одного тикера с обработкой ошибок"""
+            async with semaphore:
+                try:
+                    analysis = await self.ta.analyze_asset(
+                        ticker['symbol'],
+                        timeframes=["1h", "4h"],
+                        include_patterns=True
+                    )
+                    
+                    # Проверка индикаторных критериев
+                    indicator_criteria = criteria.get('indicators', {})
+                    if not self._check_indicator_criteria(analysis, indicator_criteria):
+                        return None
+                    
+                    # Scoring
+                    score = self._calculate_opportunity_score(analysis, ticker)
+                    
+                    # Entry plan
+                    entry_plan = self._generate_entry_plan(analysis, ticker)
+                    
+                    return {
+                        "symbol": ticker['symbol'],
+                        "current_price": ticker['price'],
+                        "change_24h": ticker['change_24h'],
+                        "volume_24h": ticker['volume_24h'],
+                        "score": score,
+                        "probability": self._estimate_probability(score, analysis),
+                        "entry_plan": entry_plan,
+                        "analysis": analysis,
+                        "why": self._generate_reasoning(analysis, score)
+                    }
+                except Exception as e:
+                    logger.warning(f"Error analyzing {ticker['symbol']}: {e}")
+                    return None
+        
+        # Параллельный анализ всех кандидатов
+        tasks = [analyze_ticker(ticker) for ticker in candidates]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        
+        # Фильтруем успешные результаты и исключения
+        opportunities = []
+        for result in results:
+            if isinstance(result, Exception):
+                logger.warning(f"Task failed with exception: {result}")
                 continue
+            if result is not None:
+                opportunities.append(result)
         
         # Сортировка по score
         opportunities.sort(key=lambda x: x['score'], reverse=True)
+        
+        # Ранний выход: если уже нашли достаточно качественных (score >= 7.0)
+        high_quality = [opp for opp in opportunities if opp['score'] >= 7.0]
+        if len(high_quality) >= limit:
+            logger.info(f"Found {len(high_quality)} high-quality opportunities, returning top {limit}")
+            return high_quality[:limit]
         
         return opportunities[:limit]
     
@@ -237,7 +261,7 @@ class MarketScanner:
         min_volume_24h: float = 1000000
     ) -> List[Dict[str, Any]]:
         """
-        Найти перепроданные активы (RSI < 30)
+        Найти перепроданные активы (RSI < 30) с fallback на более мягкие критерии
         
         Args:
             market_type: "spot" или "futures"
@@ -248,7 +272,8 @@ class MarketScanner:
         """
         logger.info(f"Finding oversold assets on {market_type}")
         
-        criteria = {
+        # Сначала строгие критерии (RSI < 30)
+        strict_criteria = {
             "market_type": market_type,
             "min_volume_24h": min_volume_24h,
             "indicators": {
@@ -256,7 +281,31 @@ class MarketScanner:
             }
         }
         
-        return await self.scan_market(criteria, limit=10)
+        results = await self.scan_market(strict_criteria, limit=10)
+        
+        # Если мало результатов - смягчаем критерии (RSI < 35)
+        if len(results) < 5:
+            logger.info(f"Only {len(results)} results with RSI < 30, trying softer criteria (RSI < 35)")
+            soft_criteria = {
+                "market_type": market_type,
+                "min_volume_24h": min_volume_24h,
+                "indicators": {
+                    "rsi_range": [0, 35]
+                }
+            }
+            soft_results = await self.scan_market(soft_criteria, limit=10)
+            
+            # Объединяем результаты, убирая дубликаты
+            seen_symbols = {r['symbol'] for r in results}
+            for r in soft_results:
+                if r['symbol'] not in seen_symbols:
+                    results.append(r)
+                    seen_symbols.add(r['symbol'])
+            
+            # Сортируем по score
+            results.sort(key=lambda x: x['score'], reverse=True)
+        
+        return results[:10]
     
     async def find_breakout_opportunities(
         self,
@@ -264,7 +313,7 @@ class MarketScanner:
         min_volume_24h: float = 1000000
     ) -> List[Dict[str, Any]]:
         """
-        Найти возможности пробоя (BB squeeze)
+        Найти возможности пробоя (BB squeeze) с параллелизацией
         
         Args:
             market_type: "spot" или "futures"
@@ -278,39 +327,57 @@ class MarketScanner:
         # Получаем все тикеры
         all_tickers = await self.client.get_all_tickers(market_type)
         
-        opportunities = []
+        # Фильтруем по объёму и ограничиваем количество
+        filtered = [
+            t for t in all_tickers 
+            if t['volume_24h'] >= min_volume_24h
+        ][:50]  # Максимум 50 для анализа
         
-        for ticker in all_tickers:
-            if ticker['volume_24h'] < min_volume_24h:
-                continue
-            
-            try:
-                analysis = await self.ta.analyze_asset(
-                    ticker['symbol'],
-                    timeframes=["4h"],
-                    include_patterns=False
-                )
-                
-                h4_data = analysis['timeframes'].get('4h', {})
-                bb = h4_data.get('indicators', {}).get('bollinger_bands', {})
-                
-                # Проверка BB squeeze
-                if bb.get('squeeze', False):
-                    score = self._calculate_opportunity_score(analysis, ticker)
+        # Параллельный анализ
+        semaphore = asyncio.Semaphore(5)
+        
+        async def check_breakout(ticker: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+            """Проверка одного тикера на BB squeeze"""
+            async with semaphore:
+                try:
+                    analysis = await self.ta.analyze_asset(
+                        ticker['symbol'],
+                        timeframes=["4h"],
+                        include_patterns=False
+                    )
                     
-                    if score >= 6.0:
-                        opportunities.append({
-                            "symbol": ticker['symbol'],
-                            "current_price": ticker['price'],
-                            "bb_width": bb.get('width', 0),
-                            "score": score,
-                            "type": "BB_SQUEEZE_BREAKOUT",
-                            "why": f"BB Squeeze detected (width: {bb.get('width', 0):.2f}%). Готовится к сильному движению."
-                        })
+                    h4_data = analysis['timeframes'].get('4h', {})
+                    bb = h4_data.get('indicators', {}).get('bollinger_bands', {})
+                    
+                    # Проверка BB squeeze
+                    if bb.get('squeeze', False):
+                        score = self._calculate_opportunity_score(analysis, ticker)
+                        
+                        if score >= 6.0:
+                            return {
+                                "symbol": ticker['symbol'],
+                                "current_price": ticker['price'],
+                                "bb_width": bb.get('width', 0),
+                                "score": score,
+                                "type": "BB_SQUEEZE_BREAKOUT",
+                                "why": f"BB Squeeze detected (width: {bb.get('width', 0):.2f}%). Готовится к сильному движению."
+                            }
+                except Exception as e:
+                    logger.warning(f"Error analyzing {ticker['symbol']}: {e}")
                 
-            except Exception as e:
-                logger.warning(f"Error analyzing {ticker['symbol']}: {e}")
+                return None
+        
+        # Параллельный анализ
+        tasks = [check_breakout(ticker) for ticker in filtered]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        
+        # Фильтруем успешные результаты
+        opportunities = []
+        for result in results:
+            if isinstance(result, Exception):
                 continue
+            if result is not None:
+                opportunities.append(result)
         
         opportunities.sort(key=lambda x: x['score'], reverse=True)
         return opportunities[:10]
