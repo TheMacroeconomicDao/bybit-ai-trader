@@ -138,7 +138,7 @@ class TechnicalAnalysis:
             'middle': float(bb.bollinger_mavg().iloc[-1]),
             'lower': float(bb.bollinger_lband().iloc[-1]),
             'width': float(bb_width),
-            'squeeze': bb_width < 2.0  # Squeeze если ширина < 2%
+            'squeeze': bool(bb_width < 2.0)  # Squeeze если ширина < 2%
         }
         
         # EMA (множественные периоды)

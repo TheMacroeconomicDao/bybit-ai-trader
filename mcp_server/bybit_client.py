@@ -279,23 +279,28 @@ class BybitClient:
             balance = await self.exchange.fetch_balance()
             
             # Получаем открытые позиции
-            positions = await self.get_open_positions()
+            try:
+                positions = await self.get_open_positions()
+            except Exception as pos_error:
+                logger.warning(f"Could not fetch positions: {pos_error}")
+                positions = []
             
             # Расчёт risk metrics
-            total_equity = balance['total'].get('USDT', 0)
+            total_equity = balance.get('total', {}).get('USDT', 0) if isinstance(balance.get('total'), dict) else 0
+            free_balance = balance.get('free', {}).get('USDT', 0) if isinstance(balance.get('free'), dict) else 0
             used_margin = sum(p.get('margin', 0) for p in positions)
             unrealized_pnl = sum(p.get('unrealized_pnl', 0) for p in positions)
             
             return {
                 "balance": {
-                    "total": total_equity,
-                    "available": balance['free'].get('USDT', 0),
-                    "used_margin": used_margin,
-                    "unrealized_pnl": unrealized_pnl
+                    "total": float(total_equity) if total_equity else 0.0,
+                    "available": float(free_balance) if free_balance else 0.0,
+                    "used_margin": float(used_margin),
+                    "unrealized_pnl": float(unrealized_pnl)
                 },
                 "positions": positions,
                 "risk_metrics": {
-                    "total_risk_pct": (used_margin / total_equity * 100) if total_equity > 0 else 0,
+                    "total_risk_pct": (used_margin / total_equity * 100) if total_equity > 0 else 0.0,
                     "positions_count": len(positions),
                     "max_drawdown": "N/A"  # TODO: Calculate from trade history
                 }
@@ -303,7 +308,22 @@ class BybitClient:
             
         except Exception as e:
             logger.error(f"Error getting account info: {e}", exc_info=True)
-            raise
+            # Возвращаем пустую структуру вместо исключения
+            return {
+                "balance": {
+                    "total": 0.0,
+                    "available": 0.0,
+                    "used_margin": 0.0,
+                    "unrealized_pnl": 0.0
+                },
+                "positions": [],
+                "risk_metrics": {
+                    "total_risk_pct": 0.0,
+                    "positions_count": 0,
+                    "max_drawdown": "N/A"
+                },
+                "error": str(e)
+            }
     
     async def get_open_positions(self) -> List[Dict[str, Any]]:
         """
@@ -317,28 +337,34 @@ class BybitClient:
         try:
             positions = await self.exchange.fetch_positions()
             
-            # Фильтруем только открытые позиции
-            open_positions = [
-                {
-                    "symbol": p['symbol'],
-                    "side": p['side'],
-                    "size": p['contracts'],
-                    "entry_price": p['entryPrice'],
-                    "current_price": p['markPrice'],
-                    "unrealized_pnl": p['unrealizedPnl'],
-                    "unrealized_pnl_pct": p['percentage'],
-                    "leverage": p['leverage'],
-                    "margin": p['initialMargin'],
-                    "liquidation_price": p['liquidationPrice']
-                }
-                for p in positions if p['contracts'] > 0
-            ]
+            # Фильтруем только открытые позиции и обрабатываем возможные отсутствующие ключи
+            open_positions = []
+            for p in positions:
+                try:
+                    contracts = p.get('contracts', 0) or p.get('size', 0) or 0
+                    if contracts > 0:
+                        open_positions.append({
+                            "symbol": p.get('symbol', 'UNKNOWN'),
+                            "side": p.get('side', 'unknown'),
+                            "size": float(contracts),
+                            "entry_price": float(p.get('entryPrice', 0) or p.get('entry_price', 0) or 0),
+                            "current_price": float(p.get('markPrice', 0) or p.get('mark_price', 0) or p.get('lastPrice', 0) or 0),
+                            "unrealized_pnl": float(p.get('unrealizedPnl', 0) or p.get('unrealized_pnl', 0) or 0),
+                            "unrealized_pnl_pct": float(p.get('percentage', 0) or p.get('unrealizedPnlPercentage', 0) or 0),
+                            "leverage": float(p.get('leverage', 1) or 1),
+                            "margin": float(p.get('initialMargin', 0) or p.get('initial_margin', 0) or 0),
+                            "liquidation_price": float(p.get('liquidationPrice', 0) or p.get('liquidation_price', 0) or 0)
+                        })
+                except (KeyError, TypeError, ValueError) as parse_error:
+                    logger.warning(f"Error parsing position: {parse_error}, position data: {p}")
+                    continue
             
             return open_positions
             
         except Exception as e:
             logger.error(f"Error getting open positions: {e}", exc_info=True)
-            raise
+            # Возвращаем пустой список вместо исключения
+            return []
     
     async def place_order(
         self,

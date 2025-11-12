@@ -9,6 +9,7 @@ import json
 import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+import numpy as np
 
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
@@ -20,6 +21,22 @@ from technical_analysis import TechnicalAnalysis
 from market_scanner import MarketScanner
 from position_monitor import PositionMonitor
 from bybit_client import BybitClient
+
+
+def json_serialize(obj: Any) -> Any:
+    """Конвертировать объект в JSON-совместимый формат"""
+    if isinstance(obj, (np.integer, np.floating)):
+        return float(obj)
+    elif isinstance(obj, np.ndarray):
+        return obj.tolist()
+    elif isinstance(obj, (np.bool_, bool)):
+        return bool(obj)
+    elif isinstance(obj, dict):
+        return {k: json_serialize(v) for k, v in obj.items()}
+    elif isinstance(obj, (list, tuple)):
+        return [json_serialize(item) for item in obj]
+    else:
+        return obj
 
 
 # Настройка логирования
@@ -522,9 +539,12 @@ async def call_tool(name: str, arguments: Any) -> List[TextContent]:
         
         elif name == "get_order_history":
             # Используем pybit напрямую
+            limit = arguments.get("limit", 50)
+            # Конвертируем в строку если нужно
+            limit_str = str(limit) if isinstance(limit, (int, float)) else limit
             response = trading_ops.session.get_order_history(
                 category=arguments.get("category", "spot"),
-                limit=arguments.get("limit", 50)
+                limit=limit_str
             )
             result = response.get("result", {})
         
@@ -604,10 +624,11 @@ async def call_tool(name: str, arguments: Any) -> List[TextContent]:
         else:
             raise ValueError(f"Unknown tool: {name}")
         
-        # Возвращаем результат
+        # Возвращаем результат (конвертируем все типы в JSON-совместимые)
+        serialized_result = json_serialize(result)
         return [TextContent(
             type="text",
-            text=json.dumps(result, indent=2, ensure_ascii=False)
+            text=json.dumps(serialized_result, indent=2, ensure_ascii=False)
         )]
         
     except Exception as e:
