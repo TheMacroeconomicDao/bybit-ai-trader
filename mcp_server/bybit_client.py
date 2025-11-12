@@ -478,6 +478,78 @@ class BybitClient:
             logger.error(f"Error placing order: {e}", exc_info=True)
             raise
     
+    async def get_funding_rate(self, symbol: str) -> Dict[str, Any]:
+        """
+        Получить funding rate для фьючерсов
+        
+        Args:
+            symbol: Торговая пара (например "BTC/USDT:USDT")
+            
+        Returns:
+            Funding rate, next funding time, market bias
+        """
+        logger.info(f"Getting funding rate for {symbol}")
+        
+        try:
+            # Для фьючерсов нужно использовать swap тип
+            self.exchange.options['defaultType'] = 'swap'
+            
+            # Получаем funding rate через CCXT
+            ticker = await self.exchange.fetch_ticker(symbol)
+            
+            # Funding rate обычно в info или отдельным запросом
+            funding_rate = ticker.get('info', {}).get('fundingRate', None)
+            next_funding_time = ticker.get('info', {}).get('nextFundingTime', None)
+            
+            # Если нет в ticker, пытаемся получить через fetchFundingRate
+            if funding_rate is None:
+                try:
+                    funding_info = await self.exchange.fetch_funding_rate(symbol)
+                    funding_rate = funding_info.get('fundingRate', 0) if funding_info else 0
+                    next_funding_time = funding_info.get('fundingTimestamp', None) if funding_info else None
+                except:
+                    funding_rate = 0
+            
+            # Конвертируем в проценты
+            funding_rate_pct = float(funding_rate) * 100 if funding_rate else 0
+            
+            # Определяем market bias
+            if funding_rate_pct > 0.01:
+                bias = "very_bullish"
+                message = f"Очень бычий funding rate ({funding_rate_pct:.4f}%). Long позиции платят short."
+            elif funding_rate_pct > 0.005:
+                bias = "bullish"
+                message = f"Бычий funding rate ({funding_rate_pct:.4f}%). Long позиции платят short."
+            elif funding_rate_pct < -0.01:
+                bias = "very_bearish"
+                message = f"Очень медвежий funding rate ({funding_rate_pct:.4f}%). Short позиции платят long."
+            elif funding_rate_pct < -0.005:
+                bias = "bearish"
+                message = f"Медвежий funding rate ({funding_rate_pct:.4f}%). Short позиции платят long."
+            else:
+                bias = "neutral"
+                message = f"Нейтральный funding rate ({funding_rate_pct:.4f}%)."
+            
+            return {
+                "symbol": symbol,
+                "funding_rate": round(funding_rate_pct, 4),
+                "funding_rate_raw": float(funding_rate) if funding_rate else 0,
+                "next_funding_time": next_funding_time,
+                "market_bias": bias,
+                "message": message,
+                "timestamp": datetime.now().isoformat()
+            }
+            
+        except Exception as e:
+            logger.error(f"Error getting funding rate for {symbol}: {e}", exc_info=True)
+            return {
+                "symbol": symbol,
+                "funding_rate": 0.0,
+                "market_bias": "unknown",
+                "message": f"Ошибка получения funding rate: {str(e)}",
+                "timestamp": datetime.now().isoformat()
+            }
+    
     async def close_position(self, symbol: str, reason: str = "Manual close") -> Dict[str, Any]:
         """
         Закрыть открытую позицию

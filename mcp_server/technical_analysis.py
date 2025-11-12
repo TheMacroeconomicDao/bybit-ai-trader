@@ -258,14 +258,28 @@ class TechnicalAnalysis:
         
         # MFI (Money Flow Index) - комбинация цены и объема
         if len(df) >= 14:
-            mfi = ta.volume.MFIIndicator(df['high'], df['low'], df['close'], df['volume'])
-            mfi_value = float(mfi.mfi().iloc[-1])
-            
-            indicators['mfi'] = {
-                'mfi': mfi_value,
-                'signal': 'overbought' if mfi_value > 80 else 'oversold' if mfi_value < 20 else 'neutral',
-                'trend': 'bullish' if mfi_value > 50 else 'bearish'
-            }
+            try:
+                mfi = ta.volume.MFIIndicator(df['high'], df['low'], df['close'], df['volume'])
+                # Проверяем разные способы доступа к MFI значению
+                if hasattr(mfi, 'mfi'):
+                    mfi_series = mfi.mfi()
+                elif hasattr(mfi, 'money_flow_index'):
+                    mfi_series = mfi.money_flow_index()
+                else:
+                    # Пробуем получить напрямую из объекта
+                    mfi_series = mfi
+                
+                mfi_value = float(mfi_series.iloc[-1]) if hasattr(mfi_series, 'iloc') else float(mfi_series[-1])
+                
+                indicators['mfi'] = {
+                    'mfi': mfi_value,
+                    'signal': 'overbought' if mfi_value > 80 else 'oversold' if mfi_value < 20 else 'neutral',
+                    'trend': 'bullish' if mfi_value > 50 else 'bearish'
+                }
+            except Exception as e:
+                logger.warning(f"Error calculating MFI: {e}")
+                # Пропускаем MFI если не удалось рассчитать
+                pass
         
         # Ichimoku Cloud - основные компоненты (если достаточно данных)
         if len(df) >= 52:
@@ -956,3 +970,260 @@ class TechnicalAnalysis:
             recommendations.append("Отличный setup! Можно входить с confidence.")
         
         return recommendations
+    
+    async def get_btc_correlation(
+        self, 
+        symbol: str, 
+        period: int = 24,
+        timeframe: str = "1h"
+    ) -> Dict[str, Any]:
+        """
+        Рассчитать корреляцию актива с BTC
+        
+        Args:
+            symbol: Торговая пара (например "ETH/USDT")
+            period: Количество периодов для анализа (по умолчанию 24 часа)
+            timeframe: Таймфрейм для анализа
+            
+        Returns:
+            Корреляция, направление, рекомендации
+        """
+        logger.info(f"Calculating BTC correlation for {symbol} (period={period}h)")
+        
+        try:
+            # Получаем данные для актива
+            asset_ohlcv = await self.client.get_ohlcv(symbol, timeframe, limit=period)
+            asset_prices = [candle[4] for candle in asset_ohlcv]  # close prices
+            
+            # Получаем данные для BTC
+            btc_ohlcv = await self.client.get_ohlcv("BTC/USDT", timeframe, limit=period)
+            btc_prices = [candle[4] for candle in btc_ohlcv]  # close prices
+            
+            if len(asset_prices) != len(btc_prices) or len(asset_prices) < 2:
+                return {
+                    "correlation": 0.0,
+                    "level": "unknown",
+                    "message": "Недостаточно данных для расчёта корреляции",
+                    "details": {}
+                }
+            
+            # Рассчитываем процентные изменения
+            asset_returns = [
+                (asset_prices[i] - asset_prices[i-1]) / asset_prices[i-1] * 100
+                for i in range(1, len(asset_prices))
+            ]
+            btc_returns = [
+                (btc_prices[i] - btc_prices[i-1]) / btc_prices[i-1] * 100
+                for i in range(1, len(btc_prices))
+            ]
+            
+            # Рассчитываем корреляцию Пирсона
+            if len(asset_returns) < 2:
+                correlation = 0.0
+            else:
+                mean_asset = sum(asset_returns) / len(asset_returns)
+                mean_btc = sum(btc_returns) / len(btc_returns)
+                
+                numerator = sum(
+                    (asset_returns[i] - mean_asset) * (btc_returns[i] - mean_btc)
+                    for i in range(len(asset_returns))
+                )
+                
+                asset_variance = sum((x - mean_asset) ** 2 for x in asset_returns)
+                btc_variance = sum((x - mean_btc) ** 2 for x in btc_returns)
+                
+                denominator = (asset_variance * btc_variance) ** 0.5
+                correlation = numerator / denominator if denominator > 0 else 0.0
+            
+            # Определяем уровень корреляции
+            if abs(correlation) >= 0.8:
+                level = "very_high"
+                message = f"Очень высокая корреляция с BTC ({correlation:.2f}). Движется почти синхронно."
+            elif abs(correlation) >= 0.6:
+                level = "high"
+                message = f"Высокая корреляция с BTC ({correlation:.2f}). Следует за BTC."
+            elif abs(correlation) >= 0.4:
+                level = "medium"
+                message = f"Средняя корреляция с BTC ({correlation:.2f}). Частично независимое движение."
+            elif abs(correlation) >= 0.2:
+                level = "low"
+                message = f"Низкая корреляция с BTC ({correlation:.2f}). Движется независимо."
+            else:
+                level = "very_low"
+                message = f"Очень низкая корреляция с BTC ({correlation:.2f}). Полностью независимое движение."
+            
+            # Анализ направления
+            asset_change = (asset_prices[-1] - asset_prices[0]) / asset_prices[0] * 100
+            btc_change = (btc_prices[-1] - btc_prices[0]) / btc_prices[0] * 100
+            
+            direction = "aligned" if (asset_change > 0 and btc_change > 0) or (asset_change < 0 and btc_change < 0) else "diverged"
+            outperformance = asset_change - btc_change
+            
+            # Рекомендации
+            recommendations = []
+            if abs(correlation) > 0.7:
+                recommendations.append("⚠️ Высокая корреляция: проверяйте BTC перед входом в alt!")
+                if btc_change < -2:
+                    recommendations.append("❌ BTC падает - избегайте long позиций в alts")
+                elif btc_change > 2:
+                    recommendations.append("✅ BTC растёт - alts longs безопаснее")
+            elif abs(correlation) < 0.3:
+                recommendations.append("✅ Низкая корреляция: можно торговать независимо от BTC")
+            
+            if outperformance > 5:
+                recommendations.append(f"🚀 Outperforming BTC на {outperformance:.1f}% - показывает силу!")
+            elif outperformance < -5:
+                recommendations.append(f"⚠️ Underperforming BTC на {abs(outperformance):.1f}% - показывает слабость")
+            
+            return {
+                "correlation": round(correlation, 3),
+                "level": level,
+                "message": message,
+                "direction": direction,
+                "outperformance_pct": round(outperformance, 2),
+                "details": {
+                    "asset_change_pct": round(asset_change, 2),
+                    "btc_change_pct": round(btc_change, 2),
+                    "period_hours": period,
+                    "timeframe": timeframe
+                },
+                "recommendations": recommendations
+            }
+            
+        except Exception as e:
+            logger.error(f"Error calculating BTC correlation for {symbol}: {e}", exc_info=True)
+            return {
+                "correlation": 0.0,
+                "level": "unknown",
+                "message": f"Ошибка расчёта корреляции: {str(e)}",
+                "details": {}
+            }
+    
+    async def check_tf_alignment(
+        self,
+        symbol: str,
+        timeframes: List[str] = ["5m", "15m", "1h", "4h", "1d"]
+    ) -> Dict[str, Any]:
+        """
+        Быстрая проверка alignment таймфреймов
+        
+        Args:
+            symbol: Торговая пара
+            timeframes: Список таймфреймов для проверки
+            
+        Returns:
+            Alignment score, визуализация, рекомендации
+        """
+        logger.info(f"Checking TF alignment for {symbol} on {timeframes}")
+        
+        try:
+            # Получаем краткий анализ для каждого таймфрейма
+            tf_signals = {}
+            tf_trends = {}
+            
+            for tf in timeframes:
+                try:
+                    tf_analysis = await self._analyze_timeframe(symbol, tf, include_patterns=False)
+                    signal = tf_analysis.get('signal', {})
+                    trend = tf_analysis.get('trend', {})
+                    
+                    tf_signals[tf] = signal.get('type', 'HOLD')
+                    tf_trends[tf] = trend.get('direction', 'sideways')
+                except Exception as e:
+                    logger.warning(f"Error analyzing {tf} for {symbol}: {e}")
+                    tf_signals[tf] = "ERROR"
+                    tf_trends[tf] = "unknown"
+            
+            # Подсчёт alignment
+            bullish_count = sum(1 for sig in tf_signals.values() if sig == "BUY")
+            bearish_count = sum(1 for sig in tf_signals.values() if sig == "SELL")
+            total_count = len([s for s in tf_signals.values() if s != "ERROR"])
+            
+            if total_count == 0:
+                return {
+                    "alignment_score": 0.0,
+                    "level": "unknown",
+                    "message": "Не удалось проанализировать таймфреймы",
+                    "visualization": {},
+                    "recommendations": []
+                }
+            
+            # Alignment score (0-1)
+            max_aligned = max(bullish_count, bearish_count)
+            alignment_score = max_aligned / total_count if total_count > 0 else 0.0
+            
+            # Определение уровня
+            if alignment_score >= 0.8:
+                level = "excellent"
+                message = f"Отличный alignment ({alignment_score*100:.0f}% таймфреймов согласны)"
+            elif alignment_score >= 0.6:
+                level = "good"
+                message = f"Хороший alignment ({alignment_score*100:.0f}% таймфреймов согласны)"
+            elif alignment_score >= 0.4:
+                level = "moderate"
+                message = f"Умеренный alignment ({alignment_score*100:.0f}% таймфреймов согласны)"
+            else:
+                level = "poor"
+                message = f"Слабый alignment ({alignment_score*100:.0f}% таймфреймов согласны)"
+            
+            # Определение направления
+            if bullish_count > bearish_count:
+                direction = "bullish"
+                strength = "strong" if bullish_count >= total_count * 0.8 else "moderate"
+            elif bearish_count > bullish_count:
+                direction = "bearish"
+                strength = "strong" if bearish_count >= total_count * 0.8 else "moderate"
+            else:
+                direction = "mixed"
+                strength = "weak"
+            
+            # Визуализация
+            visualization = {
+                "timeframes": {
+                    tf: {
+                        "signal": tf_signals.get(tf, "ERROR"),
+                        "trend": tf_trends.get(tf, "unknown"),
+                        "aligned": tf_signals.get(tf) == ("BUY" if direction == "bullish" else "SELL" if direction == "bearish" else None)
+                    }
+                    for tf in timeframes
+                },
+                "summary": {
+                    "bullish_count": bullish_count,
+                    "bearish_count": bearish_count,
+                    "total_count": total_count,
+                    "direction": direction,
+                    "strength": strength
+                }
+            }
+            
+            # Рекомендации
+            recommendations = []
+            if alignment_score >= 0.8:
+                recommendations.append("✅ Отличный alignment - можно входить с confidence")
+            elif alignment_score >= 0.6:
+                recommendations.append("✅ Хороший alignment - вход допустим")
+            elif alignment_score < 0.4:
+                recommendations.append("⚠️ Слабый alignment - лучше подождать лучшего setup")
+            
+            if direction == "mixed":
+                recommendations.append("⚠️ Смешанные сигналы - рынок неопределённый")
+            
+            return {
+                "alignment_score": round(alignment_score, 2),
+                "level": level,
+                "message": message,
+                "direction": direction,
+                "strength": strength,
+                "visualization": visualization,
+                "recommendations": recommendations
+            }
+            
+        except Exception as e:
+            logger.error(f"Error checking TF alignment for {symbol}: {e}", exc_info=True)
+            return {
+                "alignment_score": 0.0,
+                "level": "error",
+                "message": f"Ошибка проверки alignment: {str(e)}",
+                "visualization": {},
+                "recommendations": []
+            }

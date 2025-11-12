@@ -143,7 +143,8 @@
 - Prompts → references/implements → Documents
 - Workflows → follows → Prompts
 
-**Результат:** Полная инициализация агента через `mcp_memory_open_nodes`
+**Результат:** Полная инициализация агента через `call_mcp_tool("memory", "open_nodes", {names: [...]})`
+**КРИТИЧНО:** Правильное имя инструмента - `open_nodes` (НЕ `mcp_memory_open_nodes`), параметр - `names` (массив строк), сервер - `memory`
 
 ---
 

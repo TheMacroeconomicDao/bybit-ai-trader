@@ -10,6 +10,11 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+# Добавляем путь к mcp_server в sys.path для корректных импортов
+_mcp_server_path = Path(__file__).parent
+if str(_mcp_server_path) not in sys.path:
+    sys.path.insert(0, str(_mcp_server_path))
+
 import pandas as pd
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
@@ -183,6 +188,50 @@ async def list_tools() -> List[Tool]:
                     "symbol": {"type": "string"},
                     "timeframe": {"type": "string", "default": "1h"},
                     "lookback_periods": {"type": "integer", "default": 50}
+                },
+                "required": ["symbol"]
+            }
+        ),
+        
+        Tool(
+            name="get_btc_correlation",
+            description="Рассчитать корреляцию актива с BTC. Критично для альткоинов перед входом.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "symbol": {"type": "string", "description": "Торговая пара (например ETH/USDT)"},
+                    "period": {"type": "integer", "default": 24, "description": "Количество периодов для анализа"},
+                    "timeframe": {"type": "string", "default": "1h", "description": "Таймфрейм для анализа"}
+                },
+                "required": ["symbol"]
+            }
+        ),
+        
+        Tool(
+            name="get_funding_rate",
+            description="Получить funding rate для фьючерсов. Показывает market bias.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "symbol": {"type": "string", "description": "Торговая пара фьючерса (например BTC/USDT:USDT)"}
+                },
+                "required": ["symbol"]
+            }
+        ),
+        
+        Tool(
+            name="check_tf_alignment",
+            description="Быстрая проверка alignment таймфреймов. Экономит время при анализе.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "symbol": {"type": "string"},
+                    "timeframes": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "default": ["5m", "15m", "1h", "4h", "1d"],
+                        "description": "Список таймфреймов для проверки"
+                    }
                 },
                 "required": ["symbol"]
             }
@@ -505,6 +554,22 @@ async def call_tool(name: str, arguments: Any) -> List[TextContent]:
             )
             df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
             result = technical_analysis._find_support_resistance(df)
+        
+        elif name == "get_btc_correlation":
+            result = await technical_analysis.get_btc_correlation(
+                symbol=arguments["symbol"],
+                period=arguments.get("period", 24),
+                timeframe=arguments.get("timeframe", "1h")
+            )
+        
+        elif name == "get_funding_rate":
+            result = await bybit_client.get_funding_rate(arguments["symbol"])
+        
+        elif name == "check_tf_alignment":
+            result = await technical_analysis.check_tf_alignment(
+                symbol=arguments["symbol"],
+                timeframes=arguments.get("timeframes", ["5m", "15m", "1h", "4h", "1d"])
+            )
         
         # ═══ Сканирование рынка ═══
         elif name == "scan_market":

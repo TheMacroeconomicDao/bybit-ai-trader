@@ -23,8 +23,9 @@
 ### ШАГ 1: ИНИЦИАЛИЗАЦИЯ ПАМЯТИ
 
 ```
-mcp_memory_open_nodes: ["PROJECT_TRADER_AGENT", "COMPONENT_KNOWLEDGE_BASE", "PROMPT_CORE_INSTRUCTIONS"]
+call_mcp_tool("memory", "open_nodes", {names: ["PROJECT_TRADER_AGENT", "COMPONENT_KNOWLEDGE_BASE", "PROMPT_CORE_INSTRUCTIONS", "MEMORY_MANAGEMENT_RULES", "SHARED_PERSON_Gyber", "CONTEXTUAL_MEMORY_SYSTEM", "CURRENT_ISSUES_TRACKING"]})
 ```
+**КРИТИЧНО:** Правильное имя инструмента - `open_nodes` (НЕ `mcp_memory_open_nodes`), параметр - `names` (массив строк), сервер - `memory`
 
 ### ШАГ 2: ЧТЕНИЕ БАЗЫ ЗНАНИЙ
 
@@ -408,6 +409,8 @@ Safe time window: [X] часов
 Используй все инструменты, применяй всю методологию, будь максимально строгим в отборе.
 
 Найди нам ТОПОВЫЕ возможности! 🚀
+
+
 
 
 

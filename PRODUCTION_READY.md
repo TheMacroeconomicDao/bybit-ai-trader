@@ -100,7 +100,8 @@
 
 **Relations:** Все связи установлены
 
-**Инициализация:** Через `mcp_memory_open_nodes`
+**Инициализация:** Через `call_mcp_tool("memory", "open_nodes", {names: [...]})`
+**КРИТИЧНО:** Правильное имя инструмента - `open_nodes` (НЕ `mcp_memory_open_nodes`), параметр - `names` (массив строк), сервер - `memory`
 
 ---
 
