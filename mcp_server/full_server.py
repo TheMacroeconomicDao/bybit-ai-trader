@@ -530,15 +530,17 @@ async def call_tool(name: str, arguments: Any) -> List[TextContent]:
         
         # ═══ Trading Operations ═══
         elif name == "place_order":
+            # Извлекаем параметры корректно
+            logger.info(f"place_order called with arguments: {arguments}")
             result = await trading_ops.place_order(
-                symbol=arguments["symbol"],
-                side=arguments["side"],
-                order_type=arguments.get("order_type", "Market"),
-                quantity=arguments["quantity"],
-                price=arguments.get("price"),
-                stop_loss=arguments.get("stop_loss"),
-                take_profit=arguments.get("take_profit"),
-                category=arguments.get("category", "spot")
+                symbol=str(arguments.get("symbol", "")),
+                side=str(arguments.get("side", "")),
+                order_type=str(arguments.get("order_type", "Market")),
+                quantity=float(arguments.get("quantity", 0)),
+                price=float(arguments["price"]) if arguments.get("price") else None,
+                stop_loss=float(arguments["stop_loss"]) if arguments.get("stop_loss") else None,
+                take_profit=float(arguments["take_profit"]) if arguments.get("take_profit") else None,
+                category=str(arguments.get("category", "spot"))
             )
         
         elif name == "close_position":
