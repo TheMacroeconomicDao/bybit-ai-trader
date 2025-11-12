@@ -503,4 +503,3 @@ Entry: $3,000 | SL: $2,920 | TP: $3,160
 **Режим:** Conservative (Capital Preservation Priority)
 
 *Следуй этим инструкциям строго. Они проверены и designed для безопасной прибыльной торговли.*
-

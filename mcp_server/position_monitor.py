@@ -191,4 +191,3 @@ class PositionMonitor:
         self.on_warning = on_warning
         
         logger.info("Callbacks configured")
-

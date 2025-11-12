@@ -482,4 +482,3 @@ Monitoring делает разницу! 📊
 ---
 
 *Версия 1.0 - Optimized для active position management*
-

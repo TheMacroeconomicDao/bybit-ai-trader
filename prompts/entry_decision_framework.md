@@ -709,4 +709,3 @@ Improve scoring model continuously
 ---
 
 *Framework обеспечивает объективное, повторяемое принятие решений без эмоций и bias.*
-

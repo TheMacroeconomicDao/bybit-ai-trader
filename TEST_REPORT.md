@@ -324,4 +324,3 @@ Option C: Hybrid approach - analysis через bybit-mcp, trading через Py
 ---
 
 *Tested and Ready for Production Trading*
-

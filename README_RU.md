@@ -415,4 +415,3 @@ Volume confirmation: ОБЯЗАТЕЛЬНО
 
 *Created with 🤖 and ❤️ for profitable crypto trading*  
 *100% Compliance | Fully Automated | Production Ready*
-

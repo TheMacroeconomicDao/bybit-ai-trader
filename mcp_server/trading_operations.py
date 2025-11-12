@@ -594,4 +594,3 @@ class TradingOperations:
                 "success": False,
                 "error": str(e)
             }
-

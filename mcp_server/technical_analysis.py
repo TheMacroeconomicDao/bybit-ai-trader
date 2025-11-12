@@ -653,4 +653,3 @@ class TechnicalAnalysis:
             recommendations.append("Отличный setup! Можно входить с confidence.")
         
         return recommendations
-

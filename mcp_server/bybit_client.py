@@ -466,4 +466,3 @@ class BybitClient:
         """Закрыть соединение"""
         await self.exchange.close()
         logger.info("Bybit client closed")
-

@@ -341,4 +341,3 @@ class MarketScanner:
         }
         
         return await self.scan_market(criteria, limit=10)
-

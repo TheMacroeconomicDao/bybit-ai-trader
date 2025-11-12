@@ -573,4 +573,3 @@ profitable trading на Bybit!
 **СИСТЕМА ПОЛНОСТЬЮ СООТВЕТСТВУЕТ ТРЕБОВАНИЯМ И ГОТОВА К БОЕВОМУ ИСПОЛЬЗОВАНИЮ!** 🎉
 
 *100% Compliance Achieved - November 12, 2024*
-
