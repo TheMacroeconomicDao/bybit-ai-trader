@@ -38,6 +38,11 @@ class MarketScanner:
             market_type=criteria.get('market_type', 'spot')
         )
         
+        # Проверяем, что получили данные
+        if not all_tickers or len(all_tickers) == 0:
+            logger.error("No tickers received from API - this indicates a critical error")
+            raise Exception("API Error: No tickers received from Bybit API. Cannot perform market scan without market data.")
+        
         # Фильтрация по базовым критериям
         filtered = []
         

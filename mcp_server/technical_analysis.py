@@ -59,16 +59,31 @@ class TechnicalAnalysis:
         }
         
         # Анализ на каждом таймфрейме
+        successful_timeframes = 0
         for tf in timeframes:
             try:
                 tf_analysis = await self._analyze_timeframe(symbol, tf, include_patterns)
                 results["timeframes"][tf] = tf_analysis
+                successful_timeframes += 1
             except Exception as e:
                 logger.error(f"Error analyzing {symbol} on {tf}: {e}")
                 results["timeframes"][tf] = {"error": str(e)}
         
+        # Проверяем, что хотя бы один таймфрейм успешно обработан
+        if successful_timeframes == 0:
+            error_msg = f"API Error: Failed to analyze {symbol} on all timeframes. All {len(timeframes)} timeframes failed."
+            logger.error(error_msg)
+            raise Exception(error_msg)
+        
         # Composite signal (объединённый сигнал)
         results["composite_signal"] = self._generate_composite_signal(results["timeframes"])
+        
+        # Добавляем метаданные о частичных ошибках
+        if successful_timeframes < len(timeframes):
+            results["partial_success"] = True
+            results["successful_timeframes"] = successful_timeframes
+            results["total_timeframes"] = len(timeframes)
+            results["warning"] = f"Analysis completed with {successful_timeframes}/{len(timeframes)} successful timeframes. Some timeframes may have errors."
         
         # Сохраняем в кэш (TTL: 120 секунд для анализа)
         cache.set("analyze_asset", results, ttl=120, **cache_key_params)
@@ -84,15 +99,29 @@ class TechnicalAnalysis:
         """Анализ на одном таймфрейме"""
         
         # Получаем OHLCV данные
-        ohlcv = await self.client.get_ohlcv(symbol, timeframe, limit=200)
+        try:
+            ohlcv = await self.client.get_ohlcv(symbol, timeframe, limit=200)
+            
+            # Проверяем, что получили данные
+            if not ohlcv or len(ohlcv) == 0:
+                raise ValueError(f"Empty OHLCV data for {symbol} on {timeframe}")
+            
+        except Exception as e:
+            logger.error(f"Error getting OHLCV for {symbol} on {timeframe}: {e}")
+            # Пробрасываем исключение вместо возврата структуры с нулями
+            raise Exception(f"API Error: Failed to fetch OHLCV data for {symbol} on {timeframe}. Error: {e}")
         
         # Конвертируем в DataFrame
-        df = pd.DataFrame(
-            ohlcv,
-            columns=['timestamp', 'open', 'high', 'low', 'close', 'volume']
-        )
-        df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
-        df.set_index('timestamp', inplace=True)
+        try:
+            df = pd.DataFrame(
+                ohlcv,
+                columns=['timestamp', 'open', 'high', 'low', 'close', 'volume']
+            )
+            df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+            df.set_index('timestamp', inplace=True)
+        except Exception as e:
+            logger.error(f"Error converting OHLCV to DataFrame for {symbol}: {e}")
+            raise ValueError(f"Invalid OHLCV data format for {symbol}: {e}")
         
         # Расчёт всех индикаторов
         indicators = self._calculate_all_indicators(df)

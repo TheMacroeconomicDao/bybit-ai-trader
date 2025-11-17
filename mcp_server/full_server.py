@@ -10,6 +10,7 @@ import sys
 import traceback
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+from json import JSONDecodeError
 
 # Добавляем путь к mcp_server в sys.path для корректных импортов
 _mcp_server_path = Path(__file__).parent
@@ -68,7 +69,7 @@ def load_credentials() -> Dict[str, Any]:
     except FileNotFoundError:
         logger.error(f"Credentials not found: {config_path}")
         raise
-    except json.JSONDecodeError as e:
+    except JSONDecodeError as e:
         logger.error(f"Invalid JSON: {e}")
         raise
 
@@ -774,10 +775,9 @@ async def call_tool(name: str, arguments: Any) -> List[TextContent]:
                     # Пробуем преобразовать в dict, если это строка JSON
                     if isinstance(arguments, str):
                         try:
-                            import json
                             arguments = json.loads(arguments)
                             logger.info(f"Parsed arguments from JSON string")
-                        except json.JSONDecodeError as json_err:
+                        except JSONDecodeError as json_err:
                             logger.error(f"Failed to parse arguments as JSON: {json_err}")
                             result = {
                                 "success": False,
@@ -1033,16 +1033,24 @@ async def call_tool(name: str, arguments: Any) -> List[TextContent]:
             raise ValueError(f"Unknown tool: {name}")
         
         # Возвращаем результат
+        # Защита от None result
+        if result is None:
+            result = {"success": False, "error": "Tool executed but returned None"}
+        
+        # Импортируем json явно для гарантии доступности
+        import json as json_module
         return [TextContent(
             type="text",
-            text=json.dumps(result, indent=2, ensure_ascii=False)
+            text=json_module.dumps(result, indent=2, ensure_ascii=False)
         )]
         
     except Exception as e:
         logger.error(f"Error in tool {name}: {e}", exc_info=True)
+        # Импортируем json явно для гарантии доступности
+        import json as json_module
         return [TextContent(
             type="text",
-            text=json.dumps({
+            text=json_module.dumps({
                 "success": False,
                 "error": str(e),
                 "tool": name

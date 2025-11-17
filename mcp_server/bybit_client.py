@@ -11,6 +11,7 @@ from typing import Any, Dict, List, Optional
 from datetime import datetime, timedelta
 
 import ccxt.async_support as ccxt
+import aiohttp
 from loguru import logger
 from cache_manager import get_cache_manager
 
@@ -61,122 +62,173 @@ class BybitClient:
         """
         logger.info(f"Getting market overview for {market_type}")
         
-        try:
-            # Получаем все тикеры
-            spot_tickers = []
-            futures_tickers = []
-            
-            if market_type in ["spot", "both"]:
-                self.exchange.options['defaultType'] = 'spot'
-                spot_tickers = await self.exchange.fetch_tickers()
-            
-            if market_type in ["futures", "both"]:
-                self.exchange.options['defaultType'] = 'swap'
-                futures_tickers = await self.exchange.fetch_tickers()
-            
-            # Получаем BTC данные (лидер рынка)
-            btc_ticker = await self.exchange.fetch_ticker('BTC/USDT')
-            btc_price = btc_ticker['last']
-            btc_change_24h = btc_ticker['percentage']
-            
-            # Вычисляем market sentiment
-            all_tickers = list(spot_tickers.values()) + list(futures_tickers.values())
-            positive_changes = sum(1 for t in all_tickers if t['percentage'] > 0)
-            negative_changes = sum(1 for t in all_tickers if t['percentage'] < 0)
-            
-            if positive_changes > negative_changes * 1.5:
-                sentiment = "bullish"
-            elif negative_changes > positive_changes * 1.5:
-                sentiment = "bearish"
-            else:
-                sentiment = "neutral"
-            
-            # Топ gainers и losers
-            sorted_by_change = sorted(
-                [t for t in all_tickers if t['quoteVolume'] > 100000],  # Минимум $100k объём
-                key=lambda x: x['percentage'],
-                reverse=True
-            )
-            
-            top_gainers = sorted_by_change[:20]
-            top_losers = sorted_by_change[-20:]
-            
-            # Топ по объёму
-            sorted_by_volume = sorted(
-                all_tickers,
-                key=lambda x: x['quoteVolume'],
-                reverse=True
-            )
-            top_volume = sorted_by_volume[:20]
-            
-            # Расчёт общей волатильности
-            volatilities = [abs(t['percentage']) for t in all_tickers if t['percentage'] is not None]
-            avg_volatility = sum(volatilities) / len(volatilities) if volatilities else 0
-            
-            if avg_volatility > 5:
-                volatility_level = "high"
-            elif avg_volatility > 2:
-                volatility_level = "medium"
-            else:
-                volatility_level = "low"
-            
-            return {
-                "timestamp": datetime.now().isoformat(),
-                "market_type": market_type,
-                "sentiment": sentiment,
-                "btc": {
-                    "price": btc_price,
-                    "change_24h": btc_change_24h,
-                    "dominance": "N/A"  # TODO: Calculate from market caps
-                },
-                "statistics": {
-                    "total_pairs": len(all_tickers),
-                    "positive_changes": positive_changes,
-                    "negative_changes": negative_changes,
-                    "avg_volatility": round(avg_volatility, 2),
-                    "volatility_level": volatility_level
-                },
-                "top_gainers": [
-                    {
-                        "symbol": t['symbol'],
-                        "price": t['last'],
-                        "change_24h": t['percentage'],
-                        "volume_24h": t['quoteVolume']
+        # Retry логика с экспоненциальной задержкой
+        max_retries = 3
+        retry_delay = 1
+        
+        for attempt in range(max_retries):
+            try:
+                # Получаем все тикеры
+                spot_tickers = {}
+                futures_tickers = {}
+                
+                if market_type in ["spot", "both"]:
+                    try:
+                        self.exchange.options['defaultType'] = 'spot'
+                        spot_tickers = await self.exchange.fetch_tickers()
+                    except Exception as e:
+                        error_msg = str(e)
+                        if "asset/coin/query-info" in error_msg.lower() or "query-info" in error_msg.lower():
+                            logger.warning(f"CCXT error with query-info for spot tickers: {e}")
+                            spot_tickers = {}
+                        else:
+                            raise
+                
+                if market_type in ["futures", "both"]:
+                    try:
+                        self.exchange.options['defaultType'] = 'swap'
+                        futures_tickers = await self.exchange.fetch_tickers()
+                    except Exception as e:
+                        error_msg = str(e)
+                        if "asset/coin/query-info" in error_msg.lower() or "query-info" in error_msg.lower():
+                            logger.warning(f"CCXT error with query-info for futures tickers: {e}")
+                            futures_tickers = {}
+                        else:
+                            raise
+                
+                # Получаем BTC данные (лидер рынка)
+                try:
+                    btc_ticker = await self.exchange.fetch_ticker('BTC/USDT')
+                    btc_price = btc_ticker.get('last', 0) or 0
+                    btc_change_24h = btc_ticker.get('percentage', 0) or 0
+                except Exception as e:
+                    logger.warning(f"Error getting BTC ticker: {e}")
+                    btc_price = 0
+                    btc_change_24h = 0
+                
+                # Вычисляем market sentiment
+                all_tickers = list(spot_tickers.values()) + list(futures_tickers.values())
+                
+                # Проверяем, что есть данные
+                if not all_tickers:
+                    logger.error("No tickers received from API - this indicates a critical error")
+                    raise Exception("API Error: No tickers received from Bybit API. This may indicate API connectivity issues or rate limiting.")
+                
+                positive_changes = sum(1 for t in all_tickers if t.get('percentage', 0) and t.get('percentage', 0) > 0)
+                negative_changes = sum(1 for t in all_tickers if t.get('percentage', 0) and t.get('percentage', 0) < 0)
+                
+                if positive_changes > negative_changes * 1.5:
+                    sentiment = "bullish"
+                elif negative_changes > positive_changes * 1.5:
+                    sentiment = "bearish"
+                else:
+                    sentiment = "neutral"
+                
+                # Топ gainers и losers
+                sorted_by_change = sorted(
+                    [t for t in all_tickers if t.get('quoteVolume', 0) and t.get('quoteVolume', 0) > 100000],  # Минимум $100k объём
+                    key=lambda x: x.get('percentage', 0) or 0,
+                    reverse=True
+                )
+                
+                top_gainers = sorted_by_change[:20]
+                top_losers = sorted_by_change[-20:]
+                
+                # Топ по объёму
+                sorted_by_volume = sorted(
+                    all_tickers,
+                    key=lambda x: x.get('quoteVolume', 0) or 0,
+                    reverse=True
+                )
+                top_volume = sorted_by_volume[:20]
+                
+                # Расчёт общей волатильности
+                volatilities = [abs(t.get('percentage', 0) or 0) for t in all_tickers if t.get('percentage') is not None]
+                avg_volatility = sum(volatilities) / len(volatilities) if volatilities else 0
+                
+                if avg_volatility > 5:
+                    volatility_level = "high"
+                elif avg_volatility > 2:
+                    volatility_level = "medium"
+                else:
+                    volatility_level = "low"
+                
+                return {
+                    "timestamp": datetime.now().isoformat(),
+                    "market_type": market_type,
+                    "sentiment": sentiment,
+                    "btc": {
+                        "price": btc_price,
+                        "change_24h": btc_change_24h,
+                        "dominance": "N/A"  # TODO: Calculate from market caps
+                    },
+                    "statistics": {
+                        "total_pairs": len(all_tickers),
+                        "positive_changes": positive_changes,
+                        "negative_changes": negative_changes,
+                        "avg_volatility": round(avg_volatility, 2),
+                        "volatility_level": volatility_level
+                    },
+                    "top_gainers": [
+                        {
+                            "symbol": t.get('symbol', ''),
+                            "price": t.get('last', 0) or 0,
+                            "change_24h": t.get('percentage', 0) or 0,
+                            "volume_24h": t.get('quoteVolume', 0) or 0
+                        }
+                        for t in top_gainers
+                    ],
+                    "top_losers": [
+                        {
+                            "symbol": t.get('symbol', ''),
+                            "price": t.get('last', 0) or 0,
+                            "change_24h": t.get('percentage', 0) or 0,
+                            "volume_24h": t.get('quoteVolume', 0) or 0
+                        }
+                        for t in top_losers
+                    ],
+                    "top_volume": [
+                        {
+                            "symbol": t.get('symbol', ''),
+                            "price": t.get('last', 0) or 0,
+                            "volume_24h": t.get('quoteVolume', 0) or 0,
+                            "change_24h": t.get('percentage', 0) or 0
+                        }
+                        for t in top_volume
+                    ],
+                    "market_conditions": {
+                        "trend": "bullish" if btc_change_24h > 2 else "bearish" if btc_change_24h < -2 else "ranging",
+                        "volatility": volatility_level,
+                        "phase": self._determine_market_phase(sentiment, volatility_level)
                     }
-                    for t in top_gainers
-                ],
-                "top_losers": [
-                    {
-                        "symbol": t['symbol'],
-                        "price": t['last'],
-                        "change_24h": t['percentage'],
-                        "volume_24h": t['quoteVolume']
-                    }
-                    for t in top_losers
-                ],
-                "top_volume": [
-                    {
-                        "symbol": t['symbol'],
-                        "price": t['last'],
-                        "volume_24h": t['quoteVolume'],
-                        "change_24h": t['percentage']
-                    }
-                    for t in top_volume
-                ],
-                "market_conditions": {
-                    "trend": "bullish" if btc_change_24h > 2 else "bearish" if btc_change_24h < -2 else "ranging",
-                    "volatility": volatility_level,
-                    "phase": self._determine_market_phase(sentiment, volatility_level)
                 }
-            }
-            
-        except Exception as e:
-            logger.error(f"Error getting market overview: {e}", exc_info=True)
-            raise
+                
+            except Exception as e:
+                error_msg = str(e)
+                # Фильтруем ошибки, связанные с asset/coin/query-info
+                if "asset/coin/query-info" in error_msg.lower() or "query-info" in error_msg.lower():
+                    logger.warning(f"CCXT error with query-info endpoint (attempt {attempt + 1}/{max_retries}): {e}")
+                    if attempt < max_retries - 1:
+                        await asyncio.sleep(retry_delay * (2 ** attempt))
+                        continue
+                    else:
+                        # Пробрасываем исключение вместо возврата пустых данных
+                        logger.error(f"Failed to get market overview after {max_retries} attempts")
+                        raise Exception(f"API Error: Failed to fetch market overview after {max_retries} attempts. CCXT query-info endpoint issue: {e}")
+                else:
+                    # Другие ошибки - пробуем retry
+                    logger.warning(f"Error getting market overview (attempt {attempt + 1}/{max_retries}): {e}")
+                    if attempt < max_retries - 1:
+                        await asyncio.sleep(retry_delay * (2 ** attempt))
+                        continue
+                    else:
+                        logger.error(f"Failed to get market overview after {max_retries} attempts: {e}", exc_info=True)
+                        raise
     
     async def get_all_tickers(self, market_type: str = "spot", sort_by: str = "volume") -> List[Dict[str, Any]]:
         """
         Получить все торговые пары с кешированием
+        С fallback механизмом при ошибках CCXT
         
         Args:
             market_type: "spot" или "futures"
@@ -197,47 +249,91 @@ class BybitClient:
         
         logger.info(f"Getting all {market_type} tickers, sorted by {sort_by}")
         
-        try:
-            self.exchange.options['defaultType'] = 'swap' if market_type == 'futures' else 'spot'
-            tickers = await self.exchange.fetch_tickers()
-            
-            # Преобразуем в список
-            ticker_list = [
-                {
-                    "symbol": symbol,
-                    "price": ticker['last'],
-                    "change_24h": ticker['percentage'],
-                    "volume_24h": ticker['quoteVolume'],
-                    "high_24h": ticker['high'],
-                    "low_24h": ticker['low'],
-                    "bid": ticker['bid'],
-                    "ask": ticker['ask']
-                }
-                for symbol, ticker in tickers.items()
-            ]
-            
-            # Сортировка
-            if sort_by == "volume":
-                ticker_list.sort(key=lambda x: x['volume_24h'], reverse=True)
-            elif sort_by == "change":
-                ticker_list.sort(key=lambda x: x['change_24h'], reverse=True)
-            else:  # name
-                ticker_list.sort(key=lambda x: x['symbol'])
-            
-            # Обновляем кеш
-            self._tickers_cache[cache_key] = ticker_list
-            self._cache_timestamps[cache_key] = now
-            logger.debug(f"Cached tickers for {cache_key}")
-            
-            return ticker_list
-            
-        except Exception as e:
-            logger.error(f"Error getting all tickers: {e}", exc_info=True)
-            raise
+        # Retry логика с экспоненциальной задержкой
+        max_retries = 3
+        retry_delay = 1
+        
+        for attempt in range(max_retries):
+            try:
+                self.exchange.options['defaultType'] = 'swap' if market_type == 'futures' else 'spot'
+                
+                # Пытаемся получить тикеры через CCXT
+                tickers = await self.exchange.fetch_tickers()
+                
+                # Преобразуем в список с безопасной обработкой
+                ticker_list = []
+                for symbol, ticker in tickers.items():
+                    try:
+                        ticker_list.append({
+                            "symbol": symbol,
+                            "price": ticker.get('last', 0) or 0,
+                            "change_24h": ticker.get('percentage', 0) or 0,
+                            "volume_24h": ticker.get('quoteVolume', 0) or 0,
+                            "high_24h": ticker.get('high', 0) or 0,
+                            "low_24h": ticker.get('low', 0) or 0,
+                            "bid": ticker.get('bid', 0) or 0,
+                            "ask": ticker.get('ask', 0) or 0
+                        })
+                    except Exception as ticker_err:
+                        logger.warning(f"Error processing ticker {symbol}: {ticker_err}")
+                        continue
+                
+                # Сортировка
+                if sort_by == "volume":
+                    ticker_list.sort(key=lambda x: x['volume_24h'], reverse=True)
+                elif sort_by == "change":
+                    ticker_list.sort(key=lambda x: x['change_24h'], reverse=True)
+                else:  # name
+                    ticker_list.sort(key=lambda x: x['symbol'])
+                
+                # Обновляем кеш
+                self._tickers_cache[cache_key] = ticker_list
+                self._cache_timestamps[cache_key] = now
+                logger.debug(f"Cached tickers for {cache_key}")
+                
+                return ticker_list
+                
+            except Exception as e:
+                error_msg = str(e)
+                # Фильтруем ошибки, связанные с asset/coin/query-info
+                if "asset/coin/query-info" in error_msg.lower() or "query-info" in error_msg.lower():
+                    logger.warning(f"CCXT error with query-info endpoint (attempt {attempt + 1}/{max_retries}): {e}")
+                    if attempt < max_retries - 1:
+                        await asyncio.sleep(retry_delay * (2 ** attempt))
+                        continue
+                    else:
+                        # Последняя попытка - используем прямой HTTP запрос к Bybit API
+                        logger.info(f"CCXT failed, trying direct HTTP request to Bybit API for tickers")
+                        try:
+                            ticker_list = await self._get_tickers_direct_http(market_type)
+                            if ticker_list and len(ticker_list) > 0:
+                                # Обновляем кеш
+                                self._tickers_cache[cache_key] = ticker_list
+                                self._cache_timestamps[cache_key] = now
+                                logger.debug(f"Cached tickers from direct HTTP for {cache_key}")
+                                return ticker_list
+                            else:
+                                raise Exception(f"Empty tickers list from direct HTTP")
+                        except Exception as http_error:
+                            logger.error(f"Direct HTTP also failed for tickers: {http_error}")
+                            raise Exception(f"API Error: Failed to fetch tickers after {max_retries} attempts and direct HTTP fallback. CCXT error: {e}, HTTP error: {http_error}")
+                else:
+                    # Другие ошибки - пробуем retry
+                    logger.warning(f"Error getting all tickers (attempt {attempt + 1}/{max_retries}): {e}")
+                    if attempt < max_retries - 1:
+                        await asyncio.sleep(retry_delay * (2 ** attempt))
+                        continue
+                    else:
+                        logger.error(f"Failed to get tickers after {max_retries} attempts: {e}", exc_info=True)
+                        raise
+        
+        # Если дошли сюда, это не должно произойти, но на всякий случай
+        raise Exception("Unexpected error: get_all_tickers failed without proper error handling")
     
     async def get_asset_price(self, symbol: str) -> Dict[str, Any]:
         """
         Получить текущую цену актива
+        С retry логикой и обработкой ошибок
         
         Args:
             symbol: Торговая пара (например "BTC/USDT")
@@ -247,29 +343,53 @@ class BybitClient:
         """
         logger.info(f"Getting price for {symbol}")
         
-        try:
-            ticker = await self.exchange.fetch_ticker(symbol)
-            
-            return {
-                "symbol": symbol,
-                "price": ticker['last'],
-                "change_24h": ticker['percentage'],
-                "volume_24h": ticker['quoteVolume'],
-                "high_24h": ticker['high'],
-                "low_24h": ticker['low'],
-                "bid": ticker['bid'],
-                "ask": ticker['ask'],
-                "timestamp": datetime.now().isoformat()
-            }
-            
-        except Exception as e:
-            logger.error(f"Error getting asset price: {e}", exc_info=True)
-            raise
+        # Retry логика с экспоненциальной задержкой
+        max_retries = 3
+        retry_delay = 1
+        
+        for attempt in range(max_retries):
+            try:
+                ticker = await self.exchange.fetch_ticker(symbol)
+                
+                return {
+                    "symbol": symbol,
+                    "price": ticker.get('last', 0) or 0,
+                    "change_24h": ticker.get('percentage', 0) or 0,
+                    "volume_24h": ticker.get('quoteVolume', 0) or 0,
+                    "high_24h": ticker.get('high', 0) or 0,
+                    "low_24h": ticker.get('low', 0) or 0,
+                    "bid": ticker.get('bid', 0) or 0,
+                    "ask": ticker.get('ask', 0) or 0,
+                    "timestamp": datetime.now().isoformat()
+                }
+                
+            except Exception as e:
+                error_msg = str(e)
+                # Фильтруем ошибки, связанные с asset/coin/query-info
+                if "asset/coin/query-info" in error_msg.lower() or "query-info" in error_msg.lower():
+                    logger.warning(f"CCXT error with query-info endpoint for {symbol} (attempt {attempt + 1}/{max_retries}): {e}")
+                    if attempt < max_retries - 1:
+                        await asyncio.sleep(retry_delay * (2 ** attempt))
+                        continue
+                    else:
+                        # Пробрасываем исключение вместо возврата пустых данных
+                        logger.error(f"Failed to get price for {symbol} after {max_retries} attempts")
+                        raise Exception(f"API Error: Failed to fetch price for {symbol} after {max_retries} attempts. Error: {e}")
+                else:
+                    # Другие ошибки - пробуем retry
+                    logger.warning(f"Error getting asset price for {symbol} (attempt {attempt + 1}/{max_retries}): {e}")
+                    if attempt < max_retries - 1:
+                        await asyncio.sleep(retry_delay * (2 ** attempt))
+                        continue
+                    else:
+                        logger.error(f"Failed to get price for {symbol} after {max_retries} attempts: {e}", exc_info=True)
+                        raise
     
     async def get_ohlcv(self, symbol: str, timeframe: str = "1h", limit: int = 100) -> List[List]:
         """
         Получить OHLCV данные (свечи)
         С кэшированием для ускорения повторных запросов
+        С retry логикой и обработкой ошибок
         
         Args:
             symbol: Торговая пара
@@ -286,26 +406,192 @@ class BybitClient:
             logger.debug(f"Cache hit for get_ohlcv: {symbol} {timeframe}")
             return cached_result
         
+        # Retry логика с экспоненциальной задержкой
+        max_retries = 3
+        retry_delay = 1
+        
+        for attempt in range(max_retries):
+            try:
+                ohlcv = await self.exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
+                
+                # Проверяем, что получили данные
+                if not ohlcv or len(ohlcv) == 0:
+                    raise ValueError(f"Empty OHLCV data for {symbol}")
+                
+                # Сохраняем в кэш (TTL зависит от таймфрейма: меньшие таймфреймы = короче кэш)
+                ttl_map = {
+                    "1m": 10,   # 10 секунд для 1m
+                    "5m": 30,   # 30 секунд для 5m
+                    "15m": 60,  # 1 минута для 15m
+                    "1h": 120,  # 2 минуты для 1h
+                    "4h": 300,  # 5 минут для 4h
+                    "1d": 600   # 10 минут для 1d
+                }
+                ttl = ttl_map.get(timeframe, 60)  # По умолчанию 60 секунд
+                
+                cache.set("get_ohlcv", ohlcv, ttl=ttl, symbol=symbol, timeframe=timeframe, limit=limit)
+                
+                return ohlcv
+                
+            except Exception as e:
+                error_msg = str(e)
+                # Фильтруем ошибки, связанные с asset/coin/query-info
+                if "asset/coin/query-info" in error_msg.lower() or "query-info" in error_msg.lower():
+                    logger.warning(f"CCXT error with query-info endpoint for {symbol} (attempt {attempt + 1}/{max_retries}): {e}")
+                    if attempt < max_retries - 1:
+                        await asyncio.sleep(retry_delay * (2 ** attempt))
+                        continue
+                    else:
+                        # Последняя попытка - используем прямой HTTP запрос к Bybit API
+                        logger.info(f"CCXT failed, trying direct HTTP request to Bybit API for {symbol}")
+                        try:
+                            # Определяем category по символу (можно расширить логику)
+                            category = "spot"  # По умолчанию spot, можно определить по символу
+                            ohlcv = await self._get_ohlcv_direct_http(symbol, timeframe, limit, category)
+                            if ohlcv and len(ohlcv) > 0:
+                                # Сохраняем в кэш
+                                ttl_map = {
+                                    "1m": 10, "5m": 30, "15m": 60,
+                                    "1h": 120, "4h": 300, "1d": 600
+                                }
+                                ttl = ttl_map.get(timeframe, 60)
+                                cache.set("get_ohlcv", ohlcv, ttl=ttl, symbol=symbol, timeframe=timeframe, limit=limit)
+                                return ohlcv
+                            else:
+                                raise Exception(f"Empty OHLCV data from direct HTTP for {symbol}")
+                        except Exception as http_error:
+                            logger.error(f"Direct HTTP also failed for {symbol}: {http_error}")
+                            raise Exception(f"API Error: Failed to fetch OHLCV for {symbol} after {max_retries} attempts and direct HTTP fallback. CCXT error: {e}, HTTP error: {http_error}")
+                else:
+                    # Другие ошибки - пробуем retry
+                    logger.warning(f"Error getting OHLCV for {symbol} (attempt {attempt + 1}/{max_retries}): {e}")
+                    if attempt < max_retries - 1:
+                        await asyncio.sleep(retry_delay * (2 ** attempt))
+                        continue
+                    else:
+                        logger.error(f"Failed to get OHLCV for {symbol} after {max_retries} attempts: {e}", exc_info=True)
+                        raise
+    
+    async def _get_ohlcv_direct_http(self, symbol: str, timeframe: str, limit: int, category: str = "spot") -> List[List]:
+        """
+        Получить OHLCV данные через прямой HTTP запрос к Bybit API v5
+        Обходит проблемы CCXT с query-info endpoint
+        
+        Args:
+            symbol: Торговая пара
+            timeframe: Таймфрейм
+            limit: Количество свечей
+            category: "spot", "linear", или "inverse"
+        """
+        # Маппинг таймфреймов для Bybit API
+        interval_map = {
+            "1m": "1", "3m": "3", "5m": "5", "15m": "15", "30m": "30",
+            "1h": "60", "2h": "120", "4h": "240", "6h": "360", "12h": "720",
+            "1d": "D", "1w": "W", "1M": "M"
+        }
+        
+        interval = interval_map.get(timeframe, "60")
+        base_url = "https://api-testnet.bybit.com" if self.testnet else "https://api.bybit.com"
+        endpoint = "/v5/market/kline"
+        url = f"{base_url}{endpoint}"
+        
+        # Определяем category автоматически по символу если не указан
+        if category == "spot" and ("USDT" in symbol or "USDC" in symbol):
+            # Для spot используем spot
+            pass
+        elif category in ["linear", "inverse"]:
+            # Для фьючерсов используем указанный category
+            pass
+        else:
+            # По умолчанию spot
+            category = "spot"
+        
+        params = {
+            "category": category,
+            "symbol": symbol,
+            "interval": interval,
+            "limit": str(limit)
+        }
+        
         try:
-            ohlcv = await self.exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
-            
-            # Сохраняем в кэш (TTL зависит от таймфрейма: меньшие таймфреймы = короче кэш)
-            ttl_map = {
-                "1m": 10,   # 10 секунд для 1m
-                "5m": 30,   # 30 секунд для 5m
-                "15m": 60,  # 1 минута для 15m
-                "1h": 120,  # 2 минуты для 1h
-                "4h": 300,  # 5 минут для 4h
-                "1d": 600   # 10 минут для 1d
-            }
-            ttl = ttl_map.get(timeframe, 60)  # По умолчанию 60 секунд
-            
-            cache.set("get_ohlcv", ohlcv, ttl=ttl, symbol=symbol, timeframe=timeframe, limit=limit)
-            
-            return ohlcv
-            
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, params=params) as response:
+                    if response.status == 200:
+                        data = await response.json()
+                        if data.get("retCode") == 0:
+                            result = data.get("result", {})
+                            klines = result.get("list", [])
+                            
+                            # Конвертируем в формат CCXT: [[timestamp, open, high, low, close, volume], ...]
+                            ohlcv_list = []
+                            for kline in reversed(klines):  # Bybit возвращает в обратном порядке
+                                ohlcv_list.append([
+                                    int(kline[0]),  # timestamp
+                                    float(kline[1]),  # open
+                                    float(kline[2]),  # high
+                                    float(kline[3]),  # low
+                                    float(kline[4]),  # close
+                                    float(kline[5])   # volume
+                                ])
+                            
+                            return ohlcv_list
+                        else:
+                            raise Exception(f"Bybit API error: {data.get('retMsg', 'Unknown error')}")
+                    else:
+                        raise Exception(f"HTTP {response.status}: {await response.text()}")
         except Exception as e:
-            logger.error(f"Error getting OHLCV: {e}", exc_info=True)
+            logger.error(f"Direct HTTP request for OHLCV failed: {e}")
+            raise
+    
+    async def _get_tickers_direct_http(self, market_type: str) -> List[Dict[str, Any]]:
+        """
+        Получить тикеры через прямой HTTP запрос к Bybit API v5
+        Обходит проблемы CCXT с query-info endpoint
+        """
+        category = "linear" if market_type == "futures" else "spot"
+        base_url = "https://api-testnet.bybit.com" if self.testnet else "https://api.bybit.com"
+        endpoint = "/v5/market/tickers"
+        url = f"{base_url}{endpoint}"
+        
+        params = {
+            "category": category,
+            "limit": "1000"  # Максимум для одного запроса
+        }
+        
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, params=params) as response:
+                    if response.status == 200:
+                        data = await response.json()
+                        if data.get("retCode") == 0:
+                            result = data.get("result", {})
+                            tickers = result.get("list", [])
+                            
+                            # Конвертируем в формат, совместимый с CCXT
+                            ticker_list = []
+                            for ticker in tickers:
+                                try:
+                                    ticker_list.append({
+                                        "symbol": ticker.get("symbol", ""),
+                                        "price": float(ticker.get("lastPrice", 0)) or 0,
+                                        "change_24h": float(ticker.get("price24hPcnt", 0)) * 100 or 0,  # Конвертируем в проценты
+                                        "volume_24h": float(ticker.get("volume24h", 0)) or 0,
+                                        "high_24h": float(ticker.get("highPrice24h", 0)) or 0,
+                                        "low_24h": float(ticker.get("lowPrice24h", 0)) or 0,
+                                        "bid": float(ticker.get("bid1Price", 0)) or 0,
+                                        "ask": float(ticker.get("ask1Price", 0)) or 0
+                                    })
+                                except Exception as ticker_err:
+                                    logger.warning(f"Error processing ticker from direct HTTP: {ticker_err}")
+                                    continue
+                            
+                            return ticker_list
+                        else:
+                            raise Exception(f"Bybit API error: {data.get('retMsg', 'Unknown error')}")
+                    else:
+                        raise Exception(f"HTTP {response.status}: {await response.text()}")
+        except Exception as e:
+            logger.error(f"Direct HTTP request for tickers failed: {e}")
             raise
     
     async def get_orderbook(self, symbol: str, limit: int = 25) -> Dict[str, Any]:

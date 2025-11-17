@@ -748,65 +748,28 @@ class TradingOperations:
             logger.info(f"Params keys: {list(order_params.keys())}")
             logger.info(f"Params values: {list(order_params.values())}")
             
-            # КРИТИЧНО: Для фьючерсов (linear/inverse) используем прямой HTTP запрос
-            # так как Pybit имеет проблемы с обработкой ответов для фьючерсов
-            if category in ["linear", "inverse"]:
-                logger.info("Using direct HTTP request for futures order (Pybit has issues with futures)")
-                try:
-                    response = self._place_order_direct_http(order_params)
-                    logger.info("Direct HTTP request successful")
-                except Exception as http_error:
-                    logger.error(f"Direct HTTP request failed: {http_error}")
-                    raise Exception(f"Failed to place futures order via direct HTTP: {str(http_error)}")
-            else:
-                # Для spot используем Pybit
-                try:
-                    # Пробуем вызвать API через Pybit
-                    # Важно: Pybit может выбрасывать KeyError если параметры неправильные
-                    # или если ответ API имеет неожиданную структуру
-                    response = self.session.place_order(**order_params)
-                except KeyError as ke:
-                    # Если KeyError происходит при вызове API, это может быть проблема с параметрами
-                    # или с обработкой ответа внутри Pybit
-                    error_key = str(ke)
-                    logger.error(f"KeyError during API call: {error_key}")
-                    logger.error(f"KeyError args: {ke.args}")
-                    logger.error(f"KeyError repr: {repr(ke)}")
-                    logger.error(f"Order params that caused error: {order_params}")
-                    logger.error(f"Traceback: {traceback.format_exc()}")
-                    
-                    # Проверяем, может быть проблема в параметрах
-                    if '"category"' in error_key or "'category'" in error_key:
-                        # Похоже, что Pybit ожидает category в другом формате или месте
-                        logger.error("Possible issue: category parameter format")
-                        logger.error("Attempting direct HTTP request to Bybit API as fallback")
-                        
-                        # Пробуем прямой HTTP запрос к Bybit API
-                        try:
-                            response = self._place_order_direct_http(order_params)
-                            logger.info("Success with direct HTTP request")
-                        except Exception as http_error:
-                            logger.error(f"Direct HTTP request also failed: {http_error}")
-                            # Если и это не помогло, пробуем без category для spot
-                            if category == "spot":
-                                logger.info("Retrying without explicit category for spot")
-                                order_params_no_cat = {k: v for k, v in order_params.items() if k != "category"}
-                                try:
-                                    response = self.session.place_order(**order_params_no_cat)
-                                    logger.info("Success without category parameter")
-                                except Exception as retry_error:
-                                    logger.error(f"Retry also failed: {retry_error}")
-                                    raise Exception(f"API parameter error (category issue): {str(ke)}")
-                            else:
-                                raise Exception(f"API parameter error: {str(ke)}")
-                    else:
-                        raise Exception(f"API parameter error: {str(ke)}")
-                except Exception as api_error:
-                    error_type = type(api_error).__name__
-                    error_msg = str(api_error)
-                    logger.error(f"Error calling session.place_order: {error_type}: {error_msg}", exc_info=True)
-                    logger.error(f"Full traceback: {traceback.format_exc()}")
-                    raise Exception(f"API call failed: {error_type}: {error_msg}")
+            # КРИТИЧНО: Для ВСЕХ категорий используем прямой HTTP запрос
+            # так как Pybit имеет проблемы с обработкой ответов (особенно для фьючерсов)
+            # Это более надежный метод, который работает для всех категорий
+            logger.info(f"Using direct HTTP request for {category} order (more reliable than Pybit)")
+            try:
+                response = self._place_order_direct_http(order_params)
+                logger.info("Direct HTTP request successful")
+            except Exception as http_error:
+                logger.error(f"Direct HTTP request failed: {http_error}")
+                # Fallback: пробуем через Pybit только для spot
+                if category == "spot":
+                    logger.info("Trying Pybit as fallback for spot order")
+                    try:
+                        # Убираем category из параметров для Pybit (spot по умолчанию)
+                        order_params_no_cat = {k: v for k, v in order_params.items() if k != "category"}
+                        response = self.session.place_order(**order_params_no_cat)
+                        logger.info("Pybit fallback successful")
+                    except Exception as pybit_error:
+                        logger.error(f"Pybit fallback also failed: {pybit_error}")
+                        raise Exception(f"Failed to place order via both direct HTTP and Pybit: {str(http_error)}")
+                else:
+                    raise Exception(f"Failed to place {category} order via direct HTTP: {str(http_error)}")
             
             # Безопасная проверка и нормализация ответа
             # Pybit может возвращать ответ в разных форматах
@@ -839,7 +802,7 @@ class TradingOperations:
                 logger.info(f"Response retCode: {response.get('retCode')}")
                 logger.info(f"Response retMsg: {response.get('retMsg')}")
                 if 'result' in response:
-                    result = response['result']
+                    result = response.get('result')
                     logger.info(f"Result type: {type(result)}")
                     if isinstance(result, dict):
                         logger.info(f"Result keys: {list(result.keys())}")
@@ -1019,8 +982,8 @@ class TradingOperations:
                     "triggerBy": "LastPrice"
                 }
                 sl_response = self.session.place_order(**sl_params)
-                if sl_response["retCode"] == 0:
-                    logger.info(f"Stop-Loss placed: {sl_response['result'].get('orderId')}")
+                if isinstance(sl_response, dict) and sl_response.get("retCode") == 0:
+                    logger.info(f"Stop-Loss placed: {sl_response.get('result', {}).get('orderId')}")
             
             # Take-Profit (Limit order)
             if take_profit:
@@ -1033,8 +996,8 @@ class TradingOperations:
                     "price": str(take_profit)
                 }
                 tp_response = self.session.place_order(**tp_params)
-                if tp_response["retCode"] == 0:
-                    logger.info(f"Take-Profit placed: {tp_response['result'].get('orderId')}")
+                if isinstance(tp_response, dict) and tp_response.get("retCode") == 0:
+                    logger.info(f"Take-Profit placed: {tp_response.get('result', {}).get('orderId')}")
                     
         except Exception as e:
             logger.warning(f"Failed to place SL/TP orders: {e}")
@@ -1328,7 +1291,11 @@ class TradingOperations:
             logger.debug(f"Modifying position params: {params}")
             response = self.session.set_trading_stop(**params)
             
-            if response["retCode"] == 0:
+            # Безопасная проверка ответа
+            if not isinstance(response, dict):
+                raise Exception(f"Unexpected response type: {type(response)}")
+            
+            if response.get("retCode") == 0:
                 logger.info(f"Position modified successfully: {symbol}")
                 return {
                     "success": True,
@@ -1385,7 +1352,11 @@ class TradingOperations:
                 orderId=order_id
             )
             
-            if response["retCode"] == 0:
+            # Безопасная проверка ответа
+            if not isinstance(response, dict):
+                raise Exception(f"Unexpected response type: {type(response)}")
+            
+            if response.get("retCode") == 0:
                 logger.info(f"Order cancelled successfully: {order_id}")
                 return {
                     "success": True,
@@ -1438,8 +1409,9 @@ class TradingOperations:
             for cat in categories:
                 try:
                     response = self.session.get_tickers(category=cat)
-                    if response["retCode"] == 0:
-                        tickers = response["result"]["list"]
+                    # Безопасная проверка ответа
+                    if isinstance(response, dict) and response.get("retCode") == 0:
+                        tickers = response.get("result", {}).get("list", [])
                         all_tickers.extend(tickers)
                 except Exception as e:
                     logger.warning(f"Failed to get {cat} tickers: {e}")
