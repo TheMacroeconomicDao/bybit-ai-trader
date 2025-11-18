@@ -47,6 +47,31 @@ class MarketScanner:
             logger.warning(f"Failed to analyze BTC: {e}")
             btc_trend = "neutral"
             btc_analysis = {}
+
+        # 2. Get Account Balance for dynamic risk management
+        try:
+            account_info = await self.client.get_account_info()
+            # Use total equity for risk calculation
+            account_balance = float(account_info.get("balance", {}).get("total", 0.0))
+            
+            if account_balance <= 0:
+                logger.warning("Account balance is 0 or unavailable, using default $30 for calculation")
+                account_balance = 30.0
+            else:
+                logger.info(f"Using dynamic account balance: ${account_balance:.2f}")
+        except Exception as e:
+            logger.warning(f"Failed to get account info: {e}, using default $30")
+            account_balance = 30.0
+            
+        # 3. Get Open Positions for correlation check
+        open_positions_symbols = []
+        try:
+            open_positions_data = await self.client.get_open_positions()
+            open_positions_symbols = [p['symbol'] for p in open_positions_data]
+            if open_positions_symbols:
+                logger.info(f"Found open positions: {open_positions_symbols}. Will check correlation.")
+        except Exception as e:
+            logger.warning(f"Failed to get open positions: {e}")
         
         # Получаем все тикеры
         all_tickers = await self.client.get_all_tickers(
@@ -85,8 +110,25 @@ class MarketScanner:
         
         async def analyze_ticker(ticker: Dict[str, Any]) -> Optional[Dict[str, Any]]:
             """Анализ одного тикера с обработкой ошибок"""
+            
+            # Skip if already in open positions
+            if ticker['symbol'] in open_positions_symbols:
+                return None
+                
             async with semaphore:
                 try:
+                    # Correlation Check
+                    if open_positions_symbols:
+                        is_correlated = False
+                        for pos_symbol in open_positions_symbols:
+                            corr = await self.ta.get_correlation(ticker['symbol'], pos_symbol)
+                            if corr > 0.7:
+                                # logger.debug(f"Skipping {ticker['symbol']} - high correlation ({corr:.2f}) with {pos_symbol}")
+                                is_correlated = True
+                                break
+                        if is_correlated:
+                            return None
+
                     analysis = await self.ta.analyze_asset(
                         ticker['symbol'],
                         timeframes=["1h", "4h"],
@@ -98,12 +140,12 @@ class MarketScanner:
                     if not self._check_indicator_criteria(analysis, indicator_criteria):
                         return None
                     
-                    # Scoring
-                    score_data = self._calculate_opportunity_score(analysis, ticker, btc_trend)
-                    score = score_data["total"]
+                    # Entry plan (FIRST) - Pass account_balance
+                    entry_plan = self._generate_entry_plan(analysis, ticker, account_balance)
                     
-                    # Entry plan
-                    entry_plan = self._generate_entry_plan(analysis, ticker)
+                    # Scoring (SECOND) - Pass risk_reward from plan
+                    score_data = self._calculate_opportunity_score(analysis, ticker, btc_trend, entry_plan)
+                    score = score_data["total"]
                     
                     return {
                         "symbol": ticker['symbol'],
@@ -258,7 +300,7 @@ class MarketScanner:
         
         return True
     
-    def _calculate_opportunity_score(self, analysis: Dict, ticker: Dict, btc_trend: str = "neutral") -> Dict[str, Any]:
+    def _calculate_opportunity_score(self, analysis: Dict, ticker: Dict, btc_trend: str = "neutral", entry_plan: Dict = None) -> Dict[str, Any]:
         """
         Расчёт scoring возможности (0-10) на основе 10-факторной матрицы.
         Returns: {"total": float, "breakdown": Dict}
@@ -332,13 +374,19 @@ class MarketScanner:
         breakdown['pattern'] = pattern_score
         score += pattern_score
         
-        # 5. R:R (0-1.0)
-        # Assuming standard setup is 1:2 which is good.
-        rr_score = 1.0
+        # 5. R:R (0-1.0) - REAL CALCULATION
+        rr_score = 0.0
+        if entry_plan:
+            risk_reward = entry_plan.get('risk_reward', 0)
+            if risk_reward >= 3.0: rr_score = 1.0
+            elif risk_reward >= 2.0: rr_score = 0.8
+            elif risk_reward >= 1.5: rr_score = 0.5
+            else: rr_score = 0.0 # Penalty for bad R:R
+        
         breakdown['risk_reward'] = rr_score
         score += rr_score
         
-        # 6. BTC Support (0-1.0) - NEW
+        # 6. BTC Support (0-1.0)
         btc_score = 0.0
         if is_long:
             if btc_trend == 'uptrend': btc_score = 1.0
@@ -354,7 +402,7 @@ class MarketScanner:
         breakdown['btc_support'] = btc_score
         score += btc_score
         
-        # 7. S/R Level (0-1.0) - NEW
+        # 7. S/R Level (0-1.0)
         sr_score = 0.5 # Default
         current_price = ticker['price']
         levels = h4_data.get('levels', {})
@@ -380,13 +428,37 @@ class MarketScanner:
         breakdown['sr_level'] = sr_score
         score += sr_score
         
-        # 8. Trend Strength (ADX) (0-1.0)
+        # 8. Trend Strength (ADX) (0-0.5)
         adx = h4_data.get('indicators', {}).get('adx', {}).get('adx', 0)
         adx_score = 0.0
-        if adx > 25: adx_score = 1.0
-        elif adx > 20: adx_score = 0.5
+        if adx > 25: adx_score = 0.5
+        elif adx > 20: adx_score = 0.3
         breakdown['trend_strength'] = adx_score
         score += adx_score
+
+        # 9. Order Blocks (0-0.5)
+        ob_score = 0.0
+        order_blocks = h4_data.get('order_blocks', [])
+        if is_long:
+            has_bullish_ob = any(ob['type'] == 'bullish_ob' for ob in order_blocks)
+            if has_bullish_ob: ob_score = 0.5
+        elif is_short:
+            has_bearish_ob = any(ob['type'] == 'bearish_ob' for ob in order_blocks)
+            if has_bearish_ob: ob_score = 0.5
+        
+        breakdown['order_blocks'] = ob_score
+        score += ob_score
+
+        # 10. CVD Divergence (0-0.5)
+        cvd_score = 0.0
+        cvd_data = analysis.get('cvd_analysis', {})
+        if cvd_data.get('signal') == 'BULLISH_ABSORPTION' and is_long:
+             cvd_score = 0.5
+        elif cvd_data.get('signal') == 'BEARISH_ABSORPTION' and is_short:
+             cvd_score = 0.5
+        
+        breakdown['cvd'] = cvd_score
+        score += cvd_score
         
         return {"total": min(10.0, score), "breakdown": breakdown}
     
@@ -402,8 +474,8 @@ class MarketScanner:
         
         return round(min(0.95, max(0.3, adjusted_prob)), 2)
     
-    def _generate_entry_plan(self, analysis: Dict, ticker: Dict) -> Dict[str, Any]:
-        """Генерация плана входа (для LONG или SHORT) с Hard-coded риск-менеджментом"""
+    def _generate_entry_plan(self, analysis: Dict, ticker: Dict, account_balance: float = 30.0, risk_percent: float = 0.02) -> Dict[str, Any]:
+        """Генерация плана входа (для LONG или SHORT) с Динамическим риск-менеджментом"""
         
         current_price = ticker['price']
         h4_indicators = analysis['timeframes'].get('4h', {}).get('indicators', {})
@@ -439,10 +511,8 @@ class MarketScanner:
         reward_per_share = abs(take_profit - current_price)
         risk_reward = reward_per_share / risk_per_share if risk_per_share > 0 else 0
         
-        # HARD-CODED RISK MANAGEMENT
-        ACCOUNT_BALANCE = 30.0
-        MAX_RISK_PCT = 0.02
-        risk_usd = ACCOUNT_BALANCE * MAX_RISK_PCT # $0.60
+        # DYNAMIC RISK MANAGEMENT
+        risk_usd = account_balance * risk_percent
         
         # Рассчитываем размер позиции
         if risk_per_share > 0:

@@ -56,6 +56,13 @@ class TechnicalAnalysis:
         # Composite signal (объединённый сигнал)
         results["composite_signal"] = self._generate_composite_signal(results["timeframes"])
         
+        # Order Flow Analysis (CVD)
+        try:
+            results["cvd_analysis"] = await self.get_cvd_divergence(symbol)
+        except Exception as e:
+            logger.warning(f"Could not calculate CVD for {symbol}: {e}")
+            results["cvd_analysis"] = {"signal": "NONE", "error": str(e)}
+        
         # BTC Correlation (если это не BTC)
         if "BTC" not in symbol and "btc" not in symbol.lower():
             try:
@@ -97,6 +104,9 @@ class TechnicalAnalysis:
         patterns = {}
         if include_patterns:
             patterns = self._detect_patterns(df)
+            
+        # Order Blocks
+        order_blocks = self.find_order_blocks(df)
         
         # Генерация сигнала
         signal = self._generate_signal(indicators, trend, levels, patterns)
@@ -113,6 +123,7 @@ class TechnicalAnalysis:
             "trend": trend,
             "levels": levels,
             "patterns": patterns,
+            "order_blocks": order_blocks,
             "signal": signal
         }
     
@@ -553,6 +564,134 @@ class TechnicalAnalysis:
         else:
             return "Нет чёткого сигнала. Лучше подождать более ясной картины."
     
+    async def get_cvd_divergence(self, symbol: str, limit: int = 1000) -> Dict[str, Any]:
+        """
+        Анализ Order Flow: Cumulative Volume Delta (CVD) Divergence
+        Определяет поглощение (Absorption) лимитными ордерами.
+        """
+        logger.info(f"Calculating CVD divergence for {symbol}")
+        try:
+            trades = await self.client.get_public_trade_history(symbol, limit=limit)
+            if not trades:
+                return {"signal": "NONE", "details": "No trades data"}
+
+            # Сортируем от старых к новым
+            trades.sort(key=lambda x: x['timestamp'])
+            
+            cumulative_delta = 0
+            cvd_series = []
+            price_series = []
+            
+            for trade in trades:
+                size = float(trade['amount'])
+                price = float(trade['price'])
+                side = 1 if trade['side'] == 'buy' else -1
+                
+                cumulative_delta += (size * side)
+                cvd_series.append(cumulative_delta)
+                price_series.append(price)
+            
+            if not price_series:
+                return {"signal": "NONE"}
+
+            # Анализ дивергенции (последние 20% vs первые 20%)
+            idx_start = 0
+            idx_end = len(price_series) - 1
+            
+            price_change = (price_series[idx_end] - price_series[idx_start]) / price_series[idx_start]
+            cvd_change = cvd_series[idx_end] - cvd_series[idx_start]
+            
+            signal = "NONE"
+            details = "No divergence"
+            
+            # Цена падает, CVD растет (Bullish Absorption)
+            if price_change < -0.005 and cvd_change > 0:
+                signal = "BULLISH_ABSORPTION"
+                details = "Price dropping, but aggressive buying detected (Limit Buy Absorption)"
+            
+            # Цена растет, CVD падает (Bearish Absorption)
+            elif price_change > 0.005 and cvd_change < 0:
+                signal = "BEARISH_ABSORPTION"
+                details = "Price rising, but aggressive selling detected (Limit Sell Absorption)"
+                
+            return {
+                "signal": signal,
+                "price_change_pct": round(price_change * 100, 2),
+                "cvd_delta": round(cvd_change, 2),
+                "details": details,
+                "trades_count": len(trades)
+            }
+            
+        except Exception as e:
+            logger.error(f"Error calculating CVD: {e}")
+            return {"signal": "ERROR", "error": str(e)}
+
+    def find_order_blocks(self, df: pd.DataFrame) -> List[Dict[str, Any]]:
+        """
+        Поиск Order Blocks (институциональных зон спроса/предложения)
+        Bullish OB: Последняя медвежья свеча перед сильным импульсом вверх (BOS)
+        """
+        order_blocks = []
+        if len(df) < 20:
+            return []
+            
+        # Конвертируем в список словарей для скорости
+        candles = df.to_dict('records')
+        
+        # Итерация (исключая самые последние свечи чтобы подтвердить BOS)
+        for i in range(2, len(candles) - 3):
+            candle = candles[i]
+            prev_candle = candles[i-1]
+            
+            # 1. Bullish OB
+            # Условие: Сильный импульс вверх (тело > 2x среднего)
+            body = abs(candle['close'] - candle['open'])
+            avg_body = np.mean([abs(c['close'] - c['open']) for c in candles[i-5:i]])
+            
+            if (candle['close'] > candle['open'] and  # Зеленая
+                body > avg_body * 1.5 and             # Импульсная
+                prev_candle['close'] < prev_candle['open']): # Предыдущая красная
+                
+                # Проверяем слом структуры (цена ушла выше хая предыдущей свечи)
+                if candle['close'] > prev_candle['high']:
+                    ob = {
+                        "type": "bullish_ob",
+                        "top": prev_candle['high'],
+                        "bottom": prev_candle['low'],
+                        "price": (prev_candle['high'] + prev_candle['low']) / 2,
+                        "index": i-1,
+                        "strength": "strong" if body > avg_body * 2.5 else "moderate"
+                    }
+                    order_blocks.append(ob)
+            
+            # 2. Bearish OB
+            elif (candle['close'] < candle['open'] and  # Красная
+                  body > avg_body * 1.5 and             # Импульсная
+                  prev_candle['close'] > prev_candle['open']): # Предыдущая зеленая
+                  
+                if candle['close'] < prev_candle['low']:
+                    ob = {
+                        "type": "bearish_ob",
+                        "top": prev_candle['high'],
+                        "bottom": prev_candle['low'],
+                        "price": (prev_candle['high'] + prev_candle['low']) / 2,
+                        "index": i-1,
+                        "strength": "strong" if body > avg_body * 2.5 else "moderate"
+                    }
+                    order_blocks.append(ob)
+        
+        # Возвращаем только актуальные (цена еще не пробила их полностью)
+        current_price = candles[-1]['close']
+        active_obs = []
+        for ob in order_blocks:
+            if ob['type'] == 'bullish_ob' and current_price > ob['bottom']:
+                active_obs.append(ob)
+            elif ob['type'] == 'bearish_ob' and current_price < ob['top']:
+                active_obs.append(ob)
+                
+        # Возвращаем последние 3 OB
+        return active_obs[-3:]
+
     async def validate_entry(
         self,
         symbol: str,
@@ -719,6 +858,40 @@ class TechnicalAnalysis:
         
         return recommendations
     
+    async def get_correlation(
+        self,
+        symbol_a: str,
+        symbol_b: str,
+        period: int = 24,
+        timeframe: str = "1h"
+    ) -> float:
+        """
+        Рассчитать корреляцию между двумя активами
+        """
+        try:
+            # Получаем данные для A
+            a_data = await self.client.get_ohlcv(symbol_a, timeframe, limit=period)
+            a_df = pd.DataFrame(a_data, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+            a_returns = a_df['close'].pct_change().dropna()
+            
+            # Получаем данные для B
+            b_data = await self.client.get_ohlcv(symbol_b, timeframe, limit=period)
+            b_df = pd.DataFrame(b_data, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+            b_returns = b_df['close'].pct_change().dropna()
+            
+            # Выравниваем по длине
+            min_len = min(len(a_returns), len(b_returns))
+            if min_len < 2:
+                return 0.0
+                
+            a_returns = a_returns[-min_len:]
+            b_returns = b_returns[-min_len:]
+            
+            return float(a_returns.corr(b_returns))
+        except Exception as e:
+            logger.warning(f"Error calculating correlation {symbol_a}-{symbol_b}: {e}")
+            return 0.0
+
     async def get_btc_correlation(
         self,
         symbol: str,

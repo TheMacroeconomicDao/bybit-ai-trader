@@ -1234,6 +1234,28 @@ class BybitClient:
         else:
             return "consolidation"
     
+    async def get_public_trade_history(self, symbol: str, limit: int = 1000) -> List[Dict[str, Any]]:
+        """
+        Получить историю публичных сделок для анализа Order Flow (CVD)
+        
+        Args:
+            symbol: Торговая пара
+            limit: Количество сделок
+            
+        Returns:
+            Список сделок
+        """
+        logger.info(f"Getting public trades for {symbol} (limit={limit})")
+        
+        try:
+            # Используем CCXT fetch_trades
+            trades = await self.exchange.fetch_trades(symbol, limit=limit)
+            return trades
+        except Exception as e:
+            logger.error(f"Error getting public trades: {e}")
+            # Fallback logic or re-raise
+            raise
+
     async def close(self):
         """Закрыть соединение"""
         await self.exchange.close()

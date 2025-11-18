@@ -25,18 +25,18 @@
 
 ```
 1.1. BTC Status (быстро):
-    → get_ticker("BTCUSDT", "linear")
+    → get_ticker("BTCUSDT", "spot")
     → get_kline("BTCUSDT", "240", 20) // только последние 20 свечей
 
 1.2. Market Overview (агрегированные данные):
-    → get_market_overview("linear", limit=100) // НЕ 500!
+    → get_market_overview("spot", limit=100) // Используем Spot для безопасности!
     
 1.3. Параллельный поиск (используем scan_market - он уже делает анализ):
-    → scan_market({min_volume: 1M, min_score: 6, direction: "long"}, limit=20)
-    → scan_market({min_volume: 1M, min_score: 6, direction: "short"}, limit=20)
-    → find_oversold_assets() // limit=15
-    → find_breakout_opportunities() // limit=15
-    → find_trend_reversals() // limit=15
+    → scan_market({min_volume: 1M, min_score: 6, direction: "long", market_type: "spot"}, limit=20)
+    → scan_market({min_volume: 1M, min_score: 6, direction: "short", market_type: "spot"}, limit=20)
+    → find_oversold_assets(market_type="spot") // limit=15
+    → find_breakout_opportunities(market_type="spot") // limit=15
+    → find_trend_reversals(market_type="spot") // limit=15
 ```
 
 **ВАЖНО:** 
@@ -122,12 +122,18 @@
 3.1. Для каждого из топ 3-5:
      - Используем УЖЕ полученный analysis из scan_market
      - Если нужно больше деталей → analyze_asset ТОЛЬКО для этого актива
+     - SMART MONEY ПРОВЕРКИ (Deep Dive):
+       → CVD Analysis: Уже включен в analysis['cvd_analysis']
+       → Order Blocks: Уже включены в analysis['timeframes']['4h']['order_blocks']
+       → News Sentiment: Используй web_search("news [symbol] crypto") если сомневаешься
      - Дополнительные проверки (если нужно):
        → get_support_resistance() // только для финальных кандидатов
        → get_market_structure() // только если критично
 
 3.2. Review Score & Confluence:
      - Score уже рассчитан по матрице (см. score_breakdown)
+     - Проверяем CVD: если Divergence в сторону сделки → +Confidence
+     - Проверяем OB: если цена в зоне Order Block → +Confidence
      - Убеждаемся что score >= 8.0
      - Проверяем чеклист из zero_risk_methodology для финального подтверждения
      - Minimum 8.0/10 для рекомендации
