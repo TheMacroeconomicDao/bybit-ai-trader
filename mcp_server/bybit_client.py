@@ -13,7 +13,7 @@ from datetime import datetime, timedelta
 import ccxt.async_support as ccxt
 import aiohttp
 from loguru import logger
-from cache_manager import get_cache_manager
+from mcp_server.cache_manager import get_cache_manager
 
 
 class BybitClient:
