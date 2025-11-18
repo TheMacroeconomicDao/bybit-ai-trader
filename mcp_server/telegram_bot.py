@@ -36,7 +36,7 @@ class TelegramBot:
         self,
         chat_id: str,
         text: str,
-        parse_mode: Optional[str] = "HTML",
+        parse_mode: Optional[str] = None,
         disable_web_page_preview: bool = True
     ) -> dict:
         """
