@@ -149,7 +149,7 @@ async def main():
             if telegram_token and telegram_chat_ids:
                 try:
                     # Отправляем без HTML режима, так как используем специальные символы
-                await publish_to_telegram(telegram_token, telegram_chat_ids, telegram_message, parse_mode=None)
+                    await publish_to_telegram(telegram_token, telegram_chat_ids, telegram_message, parse_mode=None)
                 except Exception as e:
                     logger.error(f"Failed to publish to Telegram: {e}")
             else:
