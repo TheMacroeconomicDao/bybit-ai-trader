@@ -42,25 +42,23 @@ class DetailedFormatter:
         message += "TOP OPPORTUNITIES (After Full Market Scan)\n\n"
         
         # LONG OPPORTUNITIES
+        message += "LONG OPPORTUNITIES:\n\n"
         if all_longs:
-            message += "LONG OPPORTUNITIES:\n\n"
             for idx, opp in enumerate(all_longs[:5], 1):  # Топ 5
                 message += DetailedFormatter._format_opportunity_detailed(opp, idx)
                 message += "\n"
         else:
-            message += "LONG OPPORTUNITIES:\n\n"
             message += "No opportunities found.\n\n"
         
         message += "━" * 40 + "\n\n"
         
         # SHORT OPPORTUNITIES
+        message += "SHORT OPPORTUNITIES:\n\n"
         if all_shorts:
-            message += "SHORT OPPORTUNITIES:\n\n"
             for idx, opp in enumerate(all_shorts[:5], 1):  # Топ 5
                 message += DetailedFormatter._format_opportunity_detailed(opp, idx)
                 message += "\n"
         else:
-            message += "SHORT OPPORTUNITIES:\n\n"
             message += "No opportunities found.\n\n"
         
         message += "━" * 40 + "\n\n"
