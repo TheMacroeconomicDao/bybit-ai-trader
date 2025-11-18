@@ -1,0 +1,12 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: trader-agent-config
+  namespace: trader-agent
+data:
+  QWEN_MODEL: "qwen/qwen-turbo"  # OpenRouter формат
+  BYBIT_TESTNET: "false"
+  ANALYSIS_SCHEDULE: "*/30 * * * *"  # Каждые 30 минут
+  TELEGRAM_CHAT_IDS: "-1003382613825,-1003484839912"
+  LOG_LEVEL: "INFO"
+

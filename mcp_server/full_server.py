@@ -261,7 +261,19 @@ async def list_tools() -> List[Tool]:
         
         Tool(
             name="find_oversold_assets",
-            description="Найти перепроданные активы (RSI <30)",
+            description="Найти перепроданные активы (RSI <30) для LONG позиций",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "market_type": {"type": "string", "default": "spot"},
+                    "min_volume_24h": {"type": "number", "default": 1000000}
+                }
+            }
+        ),
+        
+        Tool(
+            name="find_overbought_assets",
+            description="Найти перекупленные активы (RSI >70) для SHORT позиций",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -313,7 +325,7 @@ async def list_tools() -> List[Tool]:
         
         Tool(
             name="validate_entry",
-            description="Валидация точки входа с полной оценкой (включая автоматическую проверку ликвидности)",
+            description="Валидация точки входа с полной оценкой (включая автоматическую проверку ликвидности, funding rate и open interest для futures)",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -329,13 +341,31 @@ async def list_tools() -> List[Tool]:
                     },
                     "stop_loss": {"type": "number"},
                     "take_profit": {"type": "number"},
-                    "risk_pct": {"type": "number", "default": 0.01}
+                    "risk_pct": {"type": "number", "default": 0.01},
+                    "category": {
+                        "type": "string",
+                        "enum": ["spot", "linear", "inverse"],
+                        "description": "Тип рынка (опционально, определяется автоматически по символу)"
+                    }
                 },
                 "required": ["symbol", "side", "stop_loss", "take_profit"],
                 "anyOf": [
                     {"required": ["entry_price"]},
                     {"required": ["entry"]}
                 ]
+            }
+        ),
+        
+        Tool(
+            name="get_open_interest",
+            description="Получить Open Interest для futures. Показывает накопление/распределение позиций.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "symbol": {"type": "string", "description": "Торговая пара (например BTCUSDT)"},
+                    "category": {"type": "string", "enum": ["linear", "inverse"], "default": "linear"}
+                },
+                "required": ["symbol"]
             }
         ),
         
@@ -494,6 +524,22 @@ async def list_tools() -> List[Tool]:
                 "required": ["symbol", "trailing_distance"]
             }
         ),
+        
+        Tool(
+            name="transfer_funds",
+            description="Перевести средства между счетами (UNIFIED, SPOT, CONTRACT)",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "from_account_type": {"type": "string", "enum": ["UNIFIED", "SPOT", "CONTRACT"], "description": "Тип счета-источника"},
+                    "to_account_type": {"type": "string", "enum": ["UNIFIED", "SPOT", "CONTRACT"], "description": "Тип счета-получателя"},
+                    "coin": {"type": "string", "description": "Монета для перевода (например USDT)"},
+                    "amount": {"type": "number", "description": "Сумма для перевода"},
+                    "transfer_id": {"type": "string", "description": "Уникальный ID перевода (опционально)"}
+                },
+                "required": ["from_account_type", "to_account_type", "coin", "amount"]
+            }
+        ),
     ]
 
 
@@ -567,6 +613,12 @@ async def call_tool(name: str, arguments: Any) -> List[TextContent]:
         elif name == "get_funding_rate":
             result = await bybit_client.get_funding_rate(arguments["symbol"])
         
+        elif name == "get_open_interest":
+            result = await bybit_client.get_open_interest(
+                symbol=arguments["symbol"],
+                category=arguments.get("category", "linear")
+            )
+        
         elif name == "check_tf_alignment":
             result = await technical_analysis.check_tf_alignment(
                 symbol=arguments["symbol"],
@@ -582,6 +634,12 @@ async def call_tool(name: str, arguments: Any) -> List[TextContent]:
         
         elif name == "find_oversold_assets":
             result = await market_scanner.find_oversold_assets(
+                market_type=arguments.get("market_type", "spot"),
+                min_volume_24h=arguments.get("min_volume_24h", 1000000)
+            )
+        
+        elif name == "find_overbought_assets":
+            result = await market_scanner.find_overbought_assets(
                 market_type=arguments.get("market_type", "spot"),
                 min_volume_24h=arguments.get("min_volume_24h", 1000000)
             )
@@ -1029,6 +1087,34 @@ async def call_tool(name: str, arguments: Any) -> List[TextContent]:
                     "error": str(e)
                 }
         
+        elif name == "transfer_funds":
+            try:
+                from_account_type = arguments.get("from_account_type", "")
+                to_account_type = arguments.get("to_account_type", "")
+                coin = arguments.get("coin", "")
+                amount = arguments.get("amount")
+                transfer_id = arguments.get("transfer_id")
+                
+                if not from_account_type or not to_account_type or not coin or amount is None:
+                    result = {
+                        "success": False,
+                        "error": "Missing required parameters: from_account_type, to_account_type, coin, amount"
+                    }
+                else:
+                    result = await trading_ops.transfer_funds(
+                        from_account_type=from_account_type,
+                        to_account_type=to_account_type,
+                        coin=coin,
+                        amount=float(amount),
+                        transfer_id=transfer_id
+                    )
+            except Exception as e:
+                logger.error(f"Error in transfer_funds: {e}", exc_info=True)
+                result = {
+                    "success": False,
+                    "error": str(e)
+                }
+        
         else:
             raise ValueError(f"Unknown tool: {name}")
         
@@ -1097,16 +1183,24 @@ async def main():
     logger.info("✅ All components initialized")
     logger.info("=" * 50)
     logger.info("Server ready for connections")
-    logger.info("Available tools: 23")
+    logger.info("Available tools: 30")
     logger.info("=" * 50)
     logger.info("Tools breakdown:")
     logger.info("  - Market Data: 3")
-    logger.info("  - Technical Analysis: 5")
-    logger.info("  - Market Scanning: 4")
+    logger.info("  - Technical Analysis: 8")
+    logger.info("  - Market Scanning: 5")
+    logger.info("  - Entry Validation: 2")
     logger.info("  - Account: 3")
-    logger.info("  - Trading Operations: 4")
+    logger.info("  - Trading Operations: 5")
     logger.info("  - Monitoring: 2")
     logger.info("  - Auto-Actions: 2")
+    logger.info("Total: 30 tools")
+    logger.info("=" * 50)
+    logger.info("Phase 1 Improvements:")
+    logger.info("  ✅ Open Interest Analysis added (get_open_interest)")
+    logger.info("  ✅ Funding Rate integration improved in validate_entry")
+    logger.info("  ✅ Market scanner optimized (10 parallel, 100 candidates)")
+    logger.info("  ✅ Fibonacci Retracements added to indicators")
     logger.info("=" * 50)
     
     # Запуск MCP server

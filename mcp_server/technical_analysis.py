@@ -9,7 +9,6 @@ from typing import Dict, List, Any, Optional
 from datetime import datetime
 import ta
 from loguru import logger
-from cache_manager import get_cache_manager
 
 
 class TechnicalAnalysis:
@@ -27,7 +26,6 @@ class TechnicalAnalysis:
     ) -> Dict[str, Any]:
         """
         ПОЛНЫЙ анализ актива на всех таймфреймах
-        С кэшированием результатов для ускорения повторных запросов
         
         Args:
             symbol: Торговая пара (например "BTC/USDT")
@@ -37,19 +35,6 @@ class TechnicalAnalysis:
         Returns:
             Детальный анализ по каждому таймфрейму + composite signal
         """
-        # Проверяем кэш
-        cache = get_cache_manager()
-        cache_key_params = {
-            "symbol": symbol,
-            "timeframes": ','.join(sorted(timeframes)),
-            "include_patterns": include_patterns
-        }
-        
-        cached_result = cache.get("analyze_asset", **cache_key_params)
-        if cached_result is not None:
-            logger.debug(f"Cache hit for analyze_asset: {symbol}")
-            return cached_result
-        
         logger.info(f"Analyzing {symbol} on timeframes: {timeframes}")
         
         results = {
@@ -59,34 +44,16 @@ class TechnicalAnalysis:
         }
         
         # Анализ на каждом таймфрейме
-        successful_timeframes = 0
         for tf in timeframes:
             try:
                 tf_analysis = await self._analyze_timeframe(symbol, tf, include_patterns)
                 results["timeframes"][tf] = tf_analysis
-                successful_timeframes += 1
             except Exception as e:
                 logger.error(f"Error analyzing {symbol} on {tf}: {e}")
                 results["timeframes"][tf] = {"error": str(e)}
         
-        # Проверяем, что хотя бы один таймфрейм успешно обработан
-        if successful_timeframes == 0:
-            error_msg = f"API Error: Failed to analyze {symbol} on all timeframes. All {len(timeframes)} timeframes failed."
-            logger.error(error_msg)
-            raise Exception(error_msg)
-        
         # Composite signal (объединённый сигнал)
         results["composite_signal"] = self._generate_composite_signal(results["timeframes"])
-        
-        # Добавляем метаданные о частичных ошибках
-        if successful_timeframes < len(timeframes):
-            results["partial_success"] = True
-            results["successful_timeframes"] = successful_timeframes
-            results["total_timeframes"] = len(timeframes)
-            results["warning"] = f"Analysis completed with {successful_timeframes}/{len(timeframes)} successful timeframes. Some timeframes may have errors."
-        
-        # Сохраняем в кэш (TTL: 120 секунд для анализа)
-        cache.set("analyze_asset", results, ttl=120, **cache_key_params)
         
         return results
     
@@ -99,29 +66,15 @@ class TechnicalAnalysis:
         """Анализ на одном таймфрейме"""
         
         # Получаем OHLCV данные
-        try:
-            ohlcv = await self.client.get_ohlcv(symbol, timeframe, limit=200)
-            
-            # Проверяем, что получили данные
-            if not ohlcv or len(ohlcv) == 0:
-                raise ValueError(f"Empty OHLCV data for {symbol} on {timeframe}")
-            
-        except Exception as e:
-            logger.error(f"Error getting OHLCV for {symbol} on {timeframe}: {e}")
-            # Пробрасываем исключение вместо возврата структуры с нулями
-            raise Exception(f"API Error: Failed to fetch OHLCV data for {symbol} on {timeframe}. Error: {e}")
+        ohlcv = await self.client.get_ohlcv(symbol, timeframe, limit=200)
         
         # Конвертируем в DataFrame
-        try:
-            df = pd.DataFrame(
-                ohlcv,
-                columns=['timestamp', 'open', 'high', 'low', 'close', 'volume']
-            )
-            df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
-            df.set_index('timestamp', inplace=True)
-        except Exception as e:
-            logger.error(f"Error converting OHLCV to DataFrame for {symbol}: {e}")
-            raise ValueError(f"Invalid OHLCV data format for {symbol}: {e}")
+        df = pd.DataFrame(
+            ohlcv,
+            columns=['timestamp', 'open', 'high', 'low', 'close', 'volume']
+        )
+        df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+        df.set_index('timestamp', inplace=True)
         
         # Расчёт всех индикаторов
         indicators = self._calculate_all_indicators(df)
@@ -248,91 +201,6 @@ class TechnicalAnalysis:
         if len(df) >= 20:
             typical_price = (df['high'] + df['low'] + df['close']) / 3
             indicators['vwap'] = float((typical_price * df['volume']).sum() / df['volume'].sum())
-        
-        # Parabolic SAR - критично для trailing stop
-        if len(df) >= 20:
-            psar = ta.trend.PSARIndicator(df['high'], df['low'], df['close'])
-            psar_values = psar.psar()
-            current_psar = float(psar_values.iloc[-1])
-            current_price = float(df['close'].iloc[-1])
-            
-            indicators['parabolic_sar'] = {
-                'sar': current_psar,
-                'trend': 'bullish' if current_price > current_psar else 'bearish',
-                'distance_pct': float(abs(current_price - current_psar) / current_price * 100),
-                'signal': 'long' if current_price > current_psar else 'short'
-            }
-        
-        # CCI (Commodity Channel Index) - для определения перекупленности/перепроданности
-        if len(df) >= 20:
-            cci = ta.trend.CCIIndicator(df['high'], df['low'], df['close'], window=20)
-            cci_value = float(cci.cci().iloc[-1])
-            
-            indicators['cci'] = {
-                'cci': cci_value,
-                'signal': 'overbought' if cci_value > 100 else 'oversold' if cci_value < -100 else 'neutral',
-                'strength': 'strong' if abs(cci_value) > 200 else 'moderate' if abs(cci_value) > 100 else 'weak'
-            }
-        
-        # Williams %R - дополнительный momentum индикатор
-        if len(df) >= 14:
-            williams_r = ta.momentum.WilliamsRIndicator(df['high'], df['low'], df['close'])
-            wr_value = float(williams_r.williams_r().iloc[-1])
-            
-            indicators['williams_r'] = {
-                'williams_r': wr_value,
-                'signal': 'oversold' if wr_value < -80 else 'overbought' if wr_value > -20 else 'neutral',
-                'strength': 'extreme' if abs(wr_value) > 90 else 'strong' if abs(wr_value) > 80 else 'moderate'
-            }
-        
-        # MFI (Money Flow Index) - комбинация цены и объема
-        if len(df) >= 14:
-            try:
-                mfi = ta.volume.MFIIndicator(df['high'], df['low'], df['close'], df['volume'])
-                # Проверяем разные способы доступа к MFI значению
-                if hasattr(mfi, 'mfi'):
-                    mfi_series = mfi.mfi()
-                elif hasattr(mfi, 'money_flow_index'):
-                    mfi_series = mfi.money_flow_index()
-                else:
-                    # Пробуем получить напрямую из объекта
-                    mfi_series = mfi
-                
-                mfi_value = float(mfi_series.iloc[-1]) if hasattr(mfi_series, 'iloc') else float(mfi_series[-1])
-                
-                indicators['mfi'] = {
-                    'mfi': mfi_value,
-                    'signal': 'overbought' if mfi_value > 80 else 'oversold' if mfi_value < 20 else 'neutral',
-                    'trend': 'bullish' if mfi_value > 50 else 'bearish'
-                }
-            except Exception as e:
-                logger.warning(f"Error calculating MFI: {e}")
-                # Пропускаем MFI если не удалось рассчитать
-                pass
-        
-        # Ichimoku Cloud - основные компоненты (если достаточно данных)
-        if len(df) >= 52:
-            ichimoku = ta.trend.IchimokuIndicator(
-                df['high'], df['low'], 
-                window1=9, window2=26, window3=52
-            )
-            
-            indicators['ichimoku'] = {
-                'tenkan_sen': float(ichimoku.ichimoku_conversion_line().iloc[-1]),
-                'kijun_sen': float(ichimoku.ichimoku_base_line().iloc[-1]),
-                'senkou_span_a': float(ichimoku.ichimoku_a().iloc[-1]),
-                'senkou_span_b': float(ichimoku.ichimoku_b().iloc[-1]),
-                'chikou_span': float(ichimoku.ichimoku_b().iloc[-26] if len(df) >= 26 else 0),
-                'cloud_position': 'above' if current_price > max(
-                    float(ichimoku.ichimoku_a().iloc[-1]),
-                    float(ichimoku.ichimoku_b().iloc[-1])
-                ) else 'below',
-                'signal': 'bullish' if (
-                    current_price > float(ichimoku.ichimoku_a().iloc[-1]) and
-                    (current_price > float(ichimoku.ichimoku_b().iloc[-1])) and
-                    (float(ichimoku.ichimoku_a().iloc[-1]) > float(ichimoku.ichimoku_b().iloc[-1]))
-                ) else 'bearish'
-            }
         
         return indicators
     
@@ -540,56 +408,6 @@ class TechnicalAnalysis:
         if bb['squeeze']:
             reasons.append("BB Squeeze detected (breakout pending)")
         
-        # Parabolic SAR - для определения тренда и trailing stop
-        if 'parabolic_sar' in indicators:
-            psar = indicators['parabolic_sar']
-            if psar['signal'] == 'long' and psar['trend'] == 'bullish':
-                score += 1
-                reasons.append(f"Parabolic SAR bullish (SAR: {psar['sar']:.2f})")
-            elif psar['signal'] == 'short' and psar['trend'] == 'bearish':
-                score -= 1
-                warnings.append(f"Parabolic SAR bearish (SAR: {psar['sar']:.2f})")
-        
-        # CCI (Commodity Channel Index)
-        if 'cci' in indicators:
-            cci = indicators['cci']
-            if cci['signal'] == 'oversold' and cci['strength'] in ['strong', 'moderate']:
-                score += 1
-                reasons.append(f"CCI oversold ({cci['cci']:.1f})")
-            elif cci['signal'] == 'overbought' and cci['strength'] in ['strong', 'moderate']:
-                score -= 1
-                warnings.append(f"CCI overbought ({cci['cci']:.1f})")
-        
-        # Williams %R
-        if 'williams_r' in indicators:
-            wr = indicators['williams_r']
-            if wr['signal'] == 'oversold' and wr['strength'] in ['strong', 'extreme']:
-                score += 0.75
-                reasons.append(f"Williams %R oversold ({wr['williams_r']:.1f})")
-            elif wr['signal'] == 'overbought' and wr['strength'] in ['strong', 'extreme']:
-                score -= 0.75
-                warnings.append(f"Williams %R overbought ({wr['williams_r']:.1f})")
-        
-        # MFI (Money Flow Index) - комбинация цены и объема
-        if 'mfi' in indicators:
-            mfi = indicators['mfi']
-            if mfi['signal'] == 'oversold' and mfi['trend'] == 'bullish':
-                score += 1
-                reasons.append(f"MFI oversold + bullish trend ({mfi['mfi']:.1f})")
-            elif mfi['signal'] == 'overbought' and mfi['trend'] == 'bearish':
-                score -= 1
-                warnings.append(f"MFI overbought + bearish trend ({mfi['mfi']:.1f})")
-        
-        # Ichimoku Cloud - комплексный анализ тренда
-        if 'ichimoku' in indicators:
-            ichi = indicators['ichimoku']
-            if ichi['signal'] == 'bullish' and ichi['cloud_position'] == 'above':
-                score += 1.5
-                reasons.append("Ichimoku bullish + price above cloud")
-            elif ichi['signal'] == 'bearish' and ichi['cloud_position'] == 'below':
-                score -= 1.5
-                warnings.append("Ichimoku bearish + price below cloud")
-        
         # Volume
         if indicators['volume']['volume_ratio'] > 1.5:
             score += 0.5
@@ -624,16 +442,13 @@ class TechnicalAnalysis:
             signal_type = "HOLD"
             strength = "neutral"
         
-        # Confidence (улучшено с учетом количества подтверждений)
-        base_confidence = 0.45
-        if len(reasons) >= 7 and len(warnings) <= 1:
-            confidence = 0.90  # Много подтверждений
-        elif len(reasons) >= 5 and len(warnings) <= 1:
+        # Confidence
+        if len(reasons) >= 5 and len(warnings) <= 1:
             confidence = 0.85
         elif len(reasons) >= 3 and len(warnings) <= 2:
             confidence = 0.65
         else:
-            confidence = base_confidence
+            confidence = 0.45
         
         return {
             "type": signal_type,
@@ -730,123 +545,6 @@ class TechnicalAnalysis:
         else:
             return "Нет чёткого сигнала. Лучше подождать более ясной картины."
     
-    async def check_liquidity(self, symbol: str) -> Dict[str, Any]:
-        """
-        Проверка ликвидности актива на основе orderbook
-        
-        Args:
-            symbol: Торговая пара
-            
-        Returns:
-            Оценка ликвидности с score (0-1) и деталями
-        """
-        logger.info(f"Checking liquidity for {symbol}")
-        
-        try:
-            # Получаем orderbook
-            orderbook = await self.client.get_orderbook(symbol, limit=50)
-            
-            bids = orderbook['bids']
-            asks = orderbook['asks']
-            
-            if not bids or not asks:
-                return {
-                    "score": 0.0,
-                    "level": "very_low",
-                    "message": "Нет данных orderbook",
-                    "details": {}
-                }
-            
-            # Расчёт ликвидности на разных уровнях
-            # 1. Spread (спред)
-            spread = orderbook['spread']
-            current_price = (orderbook['bid_price'] + orderbook['ask_price']) / 2
-            spread_pct = (spread / current_price * 100) if current_price > 0 else 100
-            
-            # 2. Объём в первых 10 уровнях (bid + ask)
-            bid_volume_10 = sum(bid[1] for bid in bids[:10])
-            ask_volume_10 = sum(ask[1] for ask in asks[:10])
-            total_volume_10 = bid_volume_10 + ask_volume_10
-            
-            # 3. Объём в первых 25 уровнях
-            bid_volume_25 = sum(bid[1] for bid in bids[:25])
-            ask_volume_25 = sum(ask[1] for ask in asks[:25])
-            total_volume_25 = bid_volume_25 + ask_volume_25
-            
-            # 4. Глубина рынка (количество уровней с объёмом > 0.1% от текущей цены)
-            min_size_threshold = current_price * 0.001  # 0.1% от цены
-            bid_depth = sum(1 for bid in bids if bid[1] * bid[0] > min_size_threshold)
-            ask_depth = sum(1 for ask in asks if ask[1] * ask[0] > min_size_threshold)
-            avg_depth = (bid_depth + ask_depth) / 2
-            
-            # Scoring (0-1)
-            score = 0.0
-            
-            # Spread score (0-0.3)
-            if spread_pct < 0.05:  # < 0.05% - отлично
-                score += 0.3
-            elif spread_pct < 0.1:  # < 0.1% - хорошо
-                score += 0.2
-            elif spread_pct < 0.2:  # < 0.2% - приемлемо
-                score += 0.1
-            
-            # Volume score (0-0.4)
-            # Нормализуем объём относительно цены
-            volume_score_10 = min(0.2, (total_volume_10 * current_price) / 100000)  # $100k = 0.2
-            volume_score_25 = min(0.2, (total_volume_25 * current_price) / 500000)  # $500k = 0.2
-            score += volume_score_10 + volume_score_25
-            
-            # Depth score (0-0.3)
-            if avg_depth >= 40:
-                score += 0.3
-            elif avg_depth >= 30:
-                score += 0.2
-            elif avg_depth >= 20:
-                score += 0.1
-            
-            score = min(1.0, score)
-            
-            # Определение уровня
-            if score >= 0.8:
-                level = "excellent"
-                message = "Отличная ликвидность. Минимальный риск slippage."
-            elif score >= 0.6:
-                level = "good"
-                message = "Хорошая ликвидность. Приемлемый риск slippage."
-            elif score >= 0.4:
-                level = "moderate"
-                message = "Умеренная ликвидность. Возможен slippage при больших объёмах."
-            elif score >= 0.2:
-                level = "low"
-                message = "Низкая ликвидность. Высокий риск slippage. Не рекомендуется."
-            else:
-                level = "very_low"
-                message = "Очень низкая ликвидность. Критический риск slippage. Избегать!"
-            
-            return {
-                "score": round(score, 3),
-                "level": level,
-                "message": message,
-                "details": {
-                    "spread": round(spread, 8),
-                    "spread_pct": round(spread_pct, 4),
-                    "volume_10_levels": round(total_volume_10 * current_price, 2),
-                    "volume_25_levels": round(total_volume_25 * current_price, 2),
-                    "market_depth": round(avg_depth, 1),
-                    "bid_depth": bid_depth,
-                    "ask_depth": ask_depth
-                }
-            }
-            
-        except Exception as e:
-            logger.error(f"Error checking liquidity for {symbol}: {e}", exc_info=True)
-            return {
-                "score": 0.0,
-                "level": "unknown",
-                "message": f"Ошибка проверки ликвидности: {str(e)}",
-                "details": {}
-            }
-    
     async def validate_entry(
         self,
         symbol: str,
@@ -874,7 +572,6 @@ class TechnicalAnalysis:
         
         # Проверки
         checks = {}
-        warnings = []
         
         # Technical checks
         composite = analysis['composite_signal']
@@ -893,34 +590,16 @@ class TechnicalAnalysis:
             "take_profit_realistic": True
         }
         
-        # Автоматическая проверка ликвидности
-        liquidity = await self.check_liquidity(symbol)
-        checks['liquidity'] = {
-            "score": liquidity['score'],
-            "level": liquidity['level'],
-            "message": liquidity['message'],
-            "details": liquidity['details']
-        }
-        
-        # Предупреждение при низкой ликвидности
-        if liquidity['score'] < 0.6:
-            warnings.append({
-                "type": "low_liquidity",
-                "severity": "high" if liquidity['score'] < 0.4 else "medium",
-                "message": liquidity['message']
-            })
-        
         # Market conditions
         h4_indicators = analysis['timeframes'].get('4h', {}).get('indicators', {})
         checks['market_conditions'] = {
             "volatility": h4_indicators.get('atr', {}).get('atr_14', 0) if h4_indicators else 0,
-            "liquidity_score": liquidity['score'],
+            "liquidity": "good",  # TODO: Improve
             "adx": h4_indicators.get('adx', {}).get('adx', 0) if h4_indicators else 0
         }
         
         # Расчёт общего score
         score = 0
-        liquidity_penalty = False  # Флаг критической низкой ликвидности
         
         if checks['technical']['trend_aligned']:
             score += 3
@@ -933,24 +612,14 @@ class TechnicalAnalysis:
         if checks['market_conditions']['adx'] > 25:
             score += 1
         
-        # Штраф за низкую ликвидность
-        if liquidity['score'] < 0.4:
-            score -= 2  # Критический штраф
-            liquidity_penalty = True  # Автоматически невалидно
-        elif liquidity['score'] < 0.6:
-            score -= 1  # Штраф за низкую ликвидность
-        
         # Валидность
-        is_valid = (score >= 7 and risk_reward >= 1.5) and not liquidity_penalty
+        is_valid = score >= 7 and risk_reward >= 1.5
         
         # Вероятность успеха (эвристика)
         win_probability = min(0.95, 0.5 + (score / 20) + (composite['confidence'] * 0.3))
         
         # Expected Value
         expected_value = (win_probability * reward) - ((1 - win_probability) * risk)
-        
-        # Объединяем warnings
-        all_warnings = warnings + (composite.get('warnings', []) if score < 7 else [])
         
         return {
             "is_valid": is_valid,
@@ -962,17 +631,11 @@ class TechnicalAnalysis:
                 "expected_value": round(expected_value, 2),
                 "risk_reward_ratio": round(risk_reward, 2)
             },
-            "warnings": all_warnings,
-            "recommendations": self._get_entry_recommendations(score, risk_reward, composite, liquidity)
+            "warnings": composite.get('warnings', []) if score < 7 else [],
+            "recommendations": self._get_entry_recommendations(score, risk_reward, composite)
         }
     
-    def _get_entry_recommendations(
-        self, 
-        score: int, 
-        rr: float, 
-        composite: Dict, 
-        liquidity: Optional[Dict] = None
-    ) -> List[str]:
+    def _get_entry_recommendations(self, score: int, rr: float, composite: Dict) -> List[str]:
         """Генерация рекомендаций для входа"""
         
         recommendations = []
@@ -986,23 +649,14 @@ class TechnicalAnalysis:
         if composite['confidence'] < 0.6:
             recommendations.append("Низкая уверенность в сигнале. Будьте осторожны.")
         
-        # Рекомендации по ликвидности
-        if liquidity:
-            if liquidity['score'] < 0.4:
-                recommendations.append("⚠️ КРИТИЧЕСКАЯ низкая ликвидность. Избегайте входа!")
-            elif liquidity['score'] < 0.6:
-                recommendations.append("⚠️ Низкая ликвидность. Риск slippage высокий. Используйте меньший размер позиции.")
-            elif liquidity['score'] >= 0.8:
-                recommendations.append("✅ Отличная ликвидность. Минимальный риск slippage.")
-        
         if score >= 8 and rr >= 2.5:
             recommendations.append("Отличный setup! Можно входить с confidence.")
         
         return recommendations
     
     async def get_btc_correlation(
-        self, 
-        symbol: str, 
+        self,
+        symbol: str,
         period: int = 24,
         timeframe: str = "1h"
     ) -> Dict[str, Any]:
@@ -1011,121 +665,75 @@ class TechnicalAnalysis:
         
         Args:
             symbol: Торговая пара (например "ETH/USDT")
-            period: Количество периодов для анализа (по умолчанию 24 часа)
+            period: Количество периодов для анализа
             timeframe: Таймфрейм для анализа
             
         Returns:
-            Корреляция, направление, рекомендации
+            Корреляция и анализ
         """
-        logger.info(f"Calculating BTC correlation for {symbol} (period={period}h)")
+        logger.info(f"Calculating BTC correlation for {symbol}")
         
         try:
             # Получаем данные для актива
-            asset_ohlcv = await self.client.get_ohlcv(symbol, timeframe, limit=period)
-            asset_prices = [candle[4] for candle in asset_ohlcv]  # close prices
+            alt_data = await self.client.get_ohlcv(symbol, timeframe, limit=period)
+            alt_df = pd.DataFrame(alt_data, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+            alt_returns = alt_df['close'].pct_change().dropna()
             
             # Получаем данные для BTC
-            btc_ohlcv = await self.client.get_ohlcv("BTC/USDT", timeframe, limit=period)
-            btc_prices = [candle[4] for candle in btc_ohlcv]  # close prices
+            btc_data = await self.client.get_ohlcv("BTC/USDT", timeframe, limit=period)
+            btc_df = pd.DataFrame(btc_data, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+            btc_returns = btc_df['close'].pct_change().dropna()
             
-            if len(asset_prices) != len(btc_prices) or len(asset_prices) < 2:
-                return {
-                    "correlation": 0.0,
-                    "level": "unknown",
-                    "message": "Недостаточно данных для расчёта корреляции",
-                    "details": {}
-                }
+            # Выравниваем по длине
+            min_len = min(len(alt_returns), len(btc_returns))
+            alt_returns = alt_returns[-min_len:]
+            btc_returns = btc_returns[-min_len:]
             
-            # Рассчитываем процентные изменения
-            asset_returns = [
-                (asset_prices[i] - asset_prices[i-1]) / asset_prices[i-1] * 100
-                for i in range(1, len(asset_prices))
-            ]
-            btc_returns = [
-                (btc_prices[i] - btc_prices[i-1]) / btc_prices[i-1] * 100
-                for i in range(1, len(btc_prices))
-            ]
+            # Рассчитываем корреляцию
+            correlation = alt_returns.corr(btc_returns) if len(alt_returns) > 1 else 0.0
             
-            # Рассчитываем корреляцию Пирсона
-            if len(asset_returns) < 2:
-                correlation = 0.0
+            # Интерпретация
+            if correlation > 0.8:
+                correlation_level = "very_high"
+                interpretation = "Очень высокая корреляция с BTC. Следует за BTC движениями."
+                recommendation = "Проверяй BTC перед входом. Если BTC падает - избегай LONG."
+            elif correlation > 0.6:
+                correlation_level = "high"
+                interpretation = "Высокая корреляция с BTC. В основном следует за BTC."
+                recommendation = "BTC тренд критичен. Проверяй BTC перед входом."
+            elif correlation > 0.4:
+                correlation_level = "medium"
+                interpretation = "Средняя корреляция. Может двигаться независимо от BTC."
+                recommendation = "BTC влияет, но не критично. Проверяй оба актива."
+            elif correlation > 0.2:
+                correlation_level = "low"
+                interpretation = "Низкая корреляция. Движется относительно независимо от BTC."
+                recommendation = "BTC влияние минимально. Фокус на технический анализ актива."
             else:
-                mean_asset = sum(asset_returns) / len(asset_returns)
-                mean_btc = sum(btc_returns) / len(btc_returns)
-                
-                numerator = sum(
-                    (asset_returns[i] - mean_asset) * (btc_returns[i] - mean_btc)
-                    for i in range(len(asset_returns))
-                )
-                
-                asset_variance = sum((x - mean_asset) ** 2 for x in asset_returns)
-                btc_variance = sum((x - mean_btc) ** 2 for x in btc_returns)
-                
-                denominator = (asset_variance * btc_variance) ** 0.5
-                correlation = numerator / denominator if denominator > 0 else 0.0
-            
-            # Определяем уровень корреляции
-            if abs(correlation) >= 0.8:
-                level = "very_high"
-                message = f"Очень высокая корреляция с BTC ({correlation:.2f}). Движется почти синхронно."
-            elif abs(correlation) >= 0.6:
-                level = "high"
-                message = f"Высокая корреляция с BTC ({correlation:.2f}). Следует за BTC."
-            elif abs(correlation) >= 0.4:
-                level = "medium"
-                message = f"Средняя корреляция с BTC ({correlation:.2f}). Частично независимое движение."
-            elif abs(correlation) >= 0.2:
-                level = "low"
-                message = f"Низкая корреляция с BTC ({correlation:.2f}). Движется независимо."
-            else:
-                level = "very_low"
-                message = f"Очень низкая корреляция с BTC ({correlation:.2f}). Полностью независимое движение."
-            
-            # Анализ направления
-            asset_change = (asset_prices[-1] - asset_prices[0]) / asset_prices[0] * 100
-            btc_change = (btc_prices[-1] - btc_prices[0]) / btc_prices[0] * 100
-            
-            direction = "aligned" if (asset_change > 0 and btc_change > 0) or (asset_change < 0 and btc_change < 0) else "diverged"
-            outperformance = asset_change - btc_change
-            
-            # Рекомендации
-            recommendations = []
-            if abs(correlation) > 0.7:
-                recommendations.append("⚠️ Высокая корреляция: проверяйте BTC перед входом в alt!")
-                if btc_change < -2:
-                    recommendations.append("❌ BTC падает - избегайте long позиций в alts")
-                elif btc_change > 2:
-                    recommendations.append("✅ BTC растёт - alts longs безопаснее")
-            elif abs(correlation) < 0.3:
-                recommendations.append("✅ Низкая корреляция: можно торговать независимо от BTC")
-            
-            if outperformance > 5:
-                recommendations.append(f"🚀 Outperforming BTC на {outperformance:.1f}% - показывает силу!")
-            elif outperformance < -5:
-                recommendations.append(f"⚠️ Underperforming BTC на {abs(outperformance):.1f}% - показывает слабость")
+                correlation_level = "very_low"
+                interpretation = "Очень низкая или отрицательная корреляция. Независимое движение."
+                recommendation = "BTC не влияет. Торгуй по техническому анализу актива."
             
             return {
+                "symbol": symbol,
+                "btc_symbol": "BTC/USDT",
                 "correlation": round(correlation, 3),
-                "level": level,
-                "message": message,
-                "direction": direction,
-                "outperformance_pct": round(outperformance, 2),
-                "details": {
-                    "asset_change_pct": round(asset_change, 2),
-                    "btc_change_pct": round(btc_change, 2),
-                    "period_hours": period,
-                    "timeframe": timeframe
-                },
-                "recommendations": recommendations
+                "correlation_level": correlation_level,
+                "period": period,
+                "timeframe": timeframe,
+                "interpretation": interpretation,
+                "recommendation": recommendation,
+                "alt_avg_return": round(alt_returns.mean() * 100, 2) if len(alt_returns) > 0 else 0,
+                "btc_avg_return": round(btc_returns.mean() * 100, 2) if len(btc_returns) > 0 else 0,
+                "timestamp": datetime.now().isoformat()
             }
-            
         except Exception as e:
-            logger.error(f"Error calculating BTC correlation for {symbol}: {e}", exc_info=True)
+            logger.error(f"Error calculating BTC correlation: {e}", exc_info=True)
             return {
-                "correlation": 0.0,
-                "level": "unknown",
-                "message": f"Ошибка расчёта корреляции: {str(e)}",
-                "details": {}
+                "symbol": symbol,
+                "success": False,
+                "error": str(e),
+                "timestamp": datetime.now().isoformat()
             }
     
     async def check_tf_alignment(
@@ -1141,118 +749,200 @@ class TechnicalAnalysis:
             timeframes: Список таймфреймов для проверки
             
         Returns:
-            Alignment score, визуализация, рекомендации
+            Alignment анализ
         """
-        logger.info(f"Checking TF alignment for {symbol} on {timeframes}")
+        logger.info(f"Checking TF alignment for {symbol}")
         
         try:
-            # Получаем краткий анализ для каждого таймфрейма
-            tf_signals = {}
-            tf_trends = {}
+            signals = {}
+            trends = {}
             
             for tf in timeframes:
-                try:
-                    tf_analysis = await self._analyze_timeframe(symbol, tf, include_patterns=False)
-                    signal = tf_analysis.get('signal', {})
-                    trend = tf_analysis.get('trend', {})
-                    
-                    tf_signals[tf] = signal.get('type', 'HOLD')
-                    tf_trends[tf] = trend.get('direction', 'sideways')
-                except Exception as e:
-                    logger.warning(f"Error analyzing {tf} for {symbol}: {e}")
-                    tf_signals[tf] = "ERROR"
-                    tf_trends[tf] = "unknown"
+                analysis = await self._analyze_timeframe(symbol, tf, include_patterns=False)
+                signal = analysis.get('signal', {})
+                trend = analysis.get('trend', {})
+                
+                signals[tf] = signal.get('type', 'HOLD')
+                trends[tf] = trend.get('direction', 'sideways')
             
-            # Подсчёт alignment
-            bullish_count = sum(1 for sig in tf_signals.values() if sig == "BUY")
-            bearish_count = sum(1 for sig in tf_signals.values() if sig == "SELL")
-            total_count = len([s for s in tf_signals.values() if s != "ERROR"])
+            # Подсчет согласованности
+            buy_count = sum(1 for s in signals.values() if s == 'BUY')
+            sell_count = sum(1 for s in signals.values() if s == 'SELL')
+            hold_count = sum(1 for s in signals.values() if s == 'HOLD')
             
-            if total_count == 0:
-                return {
-                    "alignment_score": 0.0,
-                    "level": "unknown",
-                    "message": "Не удалось проанализировать таймфреймы",
-                    "visualization": {},
-                    "recommendations": []
-                }
+            uptrend_count = sum(1 for t in trends.values() if t == 'uptrend')
+            downtrend_count = sum(1 for t in trends.values() if t == 'downtrend')
             
-            # Alignment score (0-1)
-            max_aligned = max(bullish_count, bearish_count)
-            alignment_score = max_aligned / total_count if total_count > 0 else 0.0
+            # Alignment score
+            total_tfs = len(timeframes)
+            alignment_score = max(buy_count, sell_count) / total_tfs if total_tfs > 0 else 0
             
-            # Определение уровня
+            # Определение доминирующего сигнала
+            if buy_count > sell_count and buy_count > hold_count:
+                dominant_signal = "BUY"
+                alignment = "bullish"
+            elif sell_count > buy_count and sell_count > hold_count:
+                dominant_signal = "SELL"
+                alignment = "bearish"
+            else:
+                dominant_signal = "HOLD"
+                alignment = "mixed"
+            
+            # Интерпретация
             if alignment_score >= 0.8:
-                level = "excellent"
-                message = f"Отличный alignment ({alignment_score*100:.0f}% таймфреймов согласны)"
+                interpretation = "Отличное выравнивание таймфреймов. Сильный сигнал."
+                strength = "strong"
             elif alignment_score >= 0.6:
-                level = "good"
-                message = f"Хороший alignment ({alignment_score*100:.0f}% таймфреймов согласны)"
-            elif alignment_score >= 0.4:
-                level = "moderate"
-                message = f"Умеренный alignment ({alignment_score*100:.0f}% таймфреймов согласны)"
+                interpretation = "Хорошее выравнивание. Умеренно сильный сигнал."
+                strength = "moderate"
             else:
-                level = "poor"
-                message = f"Слабый alignment ({alignment_score*100:.0f}% таймфреймов согласны)"
-            
-            # Определение направления
-            if bullish_count > bearish_count:
-                direction = "bullish"
-                strength = "strong" if bullish_count >= total_count * 0.8 else "moderate"
-            elif bearish_count > bullish_count:
-                direction = "bearish"
-                strength = "strong" if bearish_count >= total_count * 0.8 else "moderate"
-            else:
-                direction = "mixed"
+                interpretation = "Слабое выравнивание. Смешанные сигналы."
                 strength = "weak"
             
-            # Визуализация
-            visualization = {
-                "timeframes": {
-                    tf: {
-                        "signal": tf_signals.get(tf, "ERROR"),
-                        "trend": tf_trends.get(tf, "unknown"),
-                        "aligned": tf_signals.get(tf) == ("BUY" if direction == "bullish" else "SELL" if direction == "bearish" else None)
-                    }
-                    for tf in timeframes
-                },
-                "summary": {
-                    "bullish_count": bullish_count,
-                    "bearish_count": bearish_count,
-                    "total_count": total_count,
-                    "direction": direction,
-                    "strength": strength
-                }
-            }
-            
-            # Рекомендации
-            recommendations = []
-            if alignment_score >= 0.8:
-                recommendations.append("✅ Отличный alignment - можно входить с confidence")
-            elif alignment_score >= 0.6:
-                recommendations.append("✅ Хороший alignment - вход допустим")
-            elif alignment_score < 0.4:
-                recommendations.append("⚠️ Слабый alignment - лучше подождать лучшего setup")
-            
-            if direction == "mixed":
-                recommendations.append("⚠️ Смешанные сигналы - рынок неопределённый")
-            
             return {
+                "symbol": symbol,
+                "timeframes": timeframes,
+                "signals": signals,
+                "trends": trends,
                 "alignment_score": round(alignment_score, 2),
-                "level": level,
-                "message": message,
-                "direction": direction,
+                "dominant_signal": dominant_signal,
+                "alignment": alignment,
                 "strength": strength,
-                "visualization": visualization,
-                "recommendations": recommendations
+                "interpretation": interpretation,
+                "buy_signals": buy_count,
+                "sell_signals": sell_count,
+                "hold_signals": hold_count,
+                "uptrend_count": uptrend_count,
+                "downtrend_count": downtrend_count,
+                "timestamp": datetime.now().isoformat()
             }
-            
         except Exception as e:
-            logger.error(f"Error checking TF alignment for {symbol}: {e}", exc_info=True)
+            logger.error(f"Error checking TF alignment: {e}", exc_info=True)
             return {
-                "alignment_score": 0.0,
-                "level": "error",
-                "message": f"Ошибка проверки alignment: {str(e)}",
-                "visualization": {},
-                "recommendations": []
+                "symbol": symbol,
+                "success": False,
+                "error": str(e),
+                "timestamp": datetime.now().isoformat()
+            }
+    
+    async def check_liquidity(
+        self,
+        symbol: str
+    ) -> Dict[str, Any]:
+        """
+        Проверка ликвидности актива на основе orderbook
+        
+        Args:
+            symbol: Торговая пара
+            
+        Returns:
+            Liquidity score и детали
+        """
+        logger.info(f"Checking liquidity for {symbol}")
+        
+        try:
+            # Получаем orderbook через bybit_client
+            orderbook = await self.client.get_orderbook(symbol)
+            
+            if not orderbook or 'bids' not in orderbook or 'asks' not in orderbook:
+                return {
+                    "symbol": symbol,
+                    "success": False,
+                    "error": "Could not fetch orderbook",
+                    "timestamp": datetime.now().isoformat()
+                }
+            
+            bids = orderbook.get('bids', [])
+            asks = orderbook.get('asks', [])
+            
+            # Рассчитываем ликвидность
+            bid_volume = sum(float(bid[1]) for bid in bids[:10]) if len(bids) >= 10 else sum(float(bid[1]) for bid in bids)
+            ask_volume = sum(float(ask[1]) for ask in asks[:10]) if len(asks) >= 10 else sum(float(ask[1]) for ask in asks)
+            
+            total_liquidity = bid_volume + ask_volume
+            
+            # Рассчитываем spread
+            if bids and asks:
+                best_bid = float(bids[0][0])
+                best_ask = float(asks[0][0])
+                spread = best_ask - best_bid
+                spread_pct = (spread / best_bid * 100) if best_bid > 0 else 0
+            else:
+                spread = 0
+                spread_pct = 0
+            
+            # Liquidity score (0-1)
+            # Нормализуем на основе типичных значений
+            # Для BTC: ~100-500 BTC в топ-10
+            # Для альтов: зависит от объема
+            
+            if total_liquidity > 1000:
+                liquidity_score = 1.0
+                liquidity_level = "excellent"
+            elif total_liquidity > 500:
+                liquidity_score = 0.8
+                liquidity_level = "very_good"
+            elif total_liquidity > 100:
+                liquidity_score = 0.6
+                liquidity_level = "good"
+            elif total_liquidity > 50:
+                liquidity_score = 0.4
+                liquidity_level = "moderate"
+            elif total_liquidity > 10:
+                liquidity_score = 0.2
+                liquidity_level = "low"
+            else:
+                liquidity_score = 0.1
+                liquidity_level = "very_low"
+            
+            # Учитываем spread
+            if spread_pct < 0.1:
+                spread_score = 1.0
+            elif spread_pct < 0.5:
+                spread_score = 0.8
+            elif spread_pct < 1.0:
+                spread_score = 0.6
+            elif spread_pct < 2.0:
+                spread_score = 0.4
+            else:
+                spread_score = 0.2
+            
+            # Финальный score
+            final_score = (liquidity_score * 0.7) + (spread_score * 0.3)
+            
+            # Интерпретация
+            if final_score >= 0.8:
+                interpretation = "Отличная ликвидность. Можно торговать крупными позициями."
+                recommendation = "Безопасно для торговли"
+            elif final_score >= 0.6:
+                interpretation = "Хорошая ликвидность. Подходит для стандартных позиций."
+                recommendation = "Подходит для торговли"
+            elif final_score >= 0.4:
+                interpretation = "Умеренная ликвидность. Осторожно с крупными позициями."
+                recommendation = "Осторожно, используй меньшие размеры"
+            else:
+                interpretation = "Низкая ликвидность. Высокий риск проскальзывания."
+                recommendation = "Избегай или используй очень маленькие позиции"
+            
+            return {
+                "symbol": symbol,
+                "liquidity_score": round(final_score, 2),
+                "liquidity_level": liquidity_level,
+                "bid_volume_top10": round(bid_volume, 2),
+                "ask_volume_top10": round(ask_volume, 2),
+                "total_liquidity": round(total_liquidity, 2),
+                "spread": round(spread, 8),
+                "spread_pct": round(spread_pct, 4),
+                "spread_score": round(spread_score, 2),
+                "interpretation": interpretation,
+                "recommendation": recommendation,
+                "timestamp": datetime.now().isoformat()
+            }
+        except Exception as e:
+            logger.error(f"Error checking liquidity: {e}", exc_info=True)
+            return {
+                "symbol": symbol,
+                "success": False,
+                "error": str(e),
+                "timestamp": datetime.now().isoformat()
             }

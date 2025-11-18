@@ -26,15 +26,21 @@
     → get_market_info("spot", limit=500) // МАКСИМУМ доступных активов!
     → get_market_overview("spot", limit=500) // Альтернативный источник
 
-1.3. Параллельно запустить ВСЕ инструменты поиска:
+1.3. Параллельно запустить ВСЕ инструменты поиска (В ОБЕ СТОРОНЫ):
     → scan_market с РАЗНЫМИ критериями (ПАРАЛЛЕЛЬНО):
        • scan_market({min_volume: 1M, min_score: 7}, limit=100)
-       • scan_market({max_rsi: 35}, limit=100) // oversold
-       • scan_market({min_rsi: 65}, limit=100) // overbought для short
+       • scan_market({max_rsi: 35}, limit=100) // oversold для LONG
+       • scan_market({min_rsi: 65}, limit=100) // overbought для SHORT
        • scan_market({min_volume: 5M}, limit=100) // high volume
-    → find_oversold_assets() // ПАРАЛЛЕЛЬНО
+    → find_oversold_assets() // ПАРАЛЛЕЛЬНО (для LONG)
+    → find_overbought_assets() // ПАРАЛЛЕЛЬНО (для SHORT) ⚠️ ВАЖНО!
     → find_breakout_opportunities() // ПАРАЛЛЕЛЬНО
     → find_trend_reversals() // ПАРАЛЛЕЛЬНО
+    
+    ⚠️ КРИТИЧЕСКИ ВАЖНО: 
+    - Если BTC в медвежьем тренде → приоритет SHORT позициям
+    - Если BTC в бычьем тренде → приоритет LONG позициям
+    - Но искать В ОБЕ СТОРОНЫ всегда!
 
 1.4. Проанализировать топ movers:
     → Отсортировать по change_24h (gainers/losers)

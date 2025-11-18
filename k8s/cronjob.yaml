@@ -1,0 +1,84 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: trader-agent-analyzer
+  namespace: trader-agent
+spec:
+  schedule: "0 */4 * * *"  # Каждые 4 часа
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      template:
+        metadata:
+          labels:
+            app: trader-agent
+            component: analyzer
+        spec:
+          restartPolicy: OnFailure
+          containers:
+          - name: trader-agent
+            image: ghcr.io/themacroeconomicdao/trader-agent:main
+            imagePullPolicy: Always
+            env:
+            # Секреты из Secret
+            - name: QWEN_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: trader-agent-secrets
+                  key: QWEN_API_KEY
+            - name: BYBIT_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: trader-agent-secrets
+                  key: BYBIT_API_KEY
+            - name: BYBIT_API_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: trader-agent-secrets
+                  key: BYBIT_API_SECRET
+            - name: TELEGRAM_BOT_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: trader-agent-secrets
+                  key: TELEGRAM_BOT_TOKEN
+            # Конфигурация из ConfigMap
+            - name: QWEN_MODEL
+              valueFrom:
+                configMapKeyRef:
+                  name: trader-agent-config
+                  key: QWEN_MODEL
+            - name: BYBIT_TESTNET
+              valueFrom:
+                configMapKeyRef:
+                  name: trader-agent-config
+                  key: BYBIT_TESTNET
+            - name: TELEGRAM_CHAT_IDS
+              valueFrom:
+                configMapKeyRef:
+                  name: trader-agent-config
+                  key: TELEGRAM_CHAT_IDS
+            - name: LOG_LEVEL
+              valueFrom:
+                configMapKeyRef:
+                  name: trader-agent-config
+                  key: LOG_LEVEL
+            # Volume для сохранения результатов
+            volumeMounts:
+            - name: data
+              mountPath: /app/data
+            - name: logs
+              mountPath: /app/logs
+            resources:
+              requests:
+                memory: "512Mi"
+                cpu: "250m"
+              limits:
+                memory: "1Gi"
+                cpu: "500m"
+          volumes:
+          - name: data
+            emptyDir: {}
+          - name: logs
+            emptyDir: {}
+

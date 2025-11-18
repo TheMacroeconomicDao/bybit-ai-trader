@@ -1,0 +1,102 @@
+name: Deploy Trader Agent to Kubernetes
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+    
+    - name: Log in to GitHub Container Registry
+      uses: docker/login-action@v3
+      with:
+        registry: ${{ env.REGISTRY }}
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    
+    - name: Extract metadata
+      id: meta
+      uses: docker/metadata-action@v5
+      with:
+        images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+        tags: |
+          type=ref,event=branch
+          type=ref,event=pr
+          type=semver,pattern={{version}}
+          type=semver,pattern={{major}}.{{minor}}
+          type=sha,prefix={{branch}}-
+          type=raw,value=latest,enable={{is_default_branch}}
+    
+    - name: Build and push Docker image
+      uses: docker/build-push-action@v5
+      with:
+        context: .
+        push: true
+        tags: ${{ steps.meta.outputs.tags }}
+        labels: ${{ steps.meta.outputs.labels }}
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
+
+  deploy:
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Set up kubectl
+      uses: azure/setup-kubectl@v3
+    
+    - name: Configure kubectl
+      run: |
+        # Настройка kubectl для вашего кластера
+        # Замените на вашу конфигурацию
+        echo "${{ secrets.KUBECONFIG }}" | base64 -d > $HOME/.kube/config
+        kubectl config set-context --current --namespace=trader-agent
+    
+    - name: Create namespace
+      run: kubectl apply -f k8s/namespace.yaml
+    
+    - name: Apply ConfigMap
+      run: kubectl apply -f k8s/configmap.yaml
+    
+    - name: Create or update Secrets from GitHub Secrets
+      run: |
+        kubectl create secret generic trader-agent-secrets \
+          --from-literal=QWEN_API_KEY="${{ secrets.QWEN_API_KEY }}" \
+          --from-literal=BYBIT_API_KEY="${{ secrets.BYBIT_API_KEY }}" \
+          --from-literal=BYBIT_API_SECRET="${{ secrets.BYBIT_API_SECRET }}" \
+          --from-literal=TELEGRAM_BOT_TOKEN="${{ secrets.TELEGRAM_BOT_TOKEN }}" \
+          -n trader-agent \
+          --dry-run=client -o yaml | kubectl apply -f -
+    
+    - name: Apply CronJob
+      run: kubectl apply -f k8s/cronjob.yaml
+    
+    - name: Verify deployment
+      run: |
+        echo "📊 CronJob status:"
+        kubectl get cronjob -n trader-agent
+        echo ""
+        echo "📦 Recent Jobs:"
+        kubectl get jobs -n trader-agent --sort-by=.metadata.creationTimestamp | tail -5
+

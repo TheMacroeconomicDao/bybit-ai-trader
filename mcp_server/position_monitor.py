@@ -89,12 +89,7 @@ class PositionMonitor:
         """Обработка WebSocket updates позиций"""
         
         try:
-            # Обрабатываем сообщение в синхронном контексте
-            # и создаём async task для дальнейшей обработки
             data = message.get("data", [])
-            
-            if not data:
-                return
             
             for position in data:
                 symbol = position.get("symbol")
@@ -117,38 +112,15 @@ class PositionMonitor:
                     "updated_at": datetime.now().isoformat()
                 }
                 
-                # Создаём async task для callback и auto-actions
-                # WebSocket callback вызывается в отдельном потоке, поэтому
-                # нужно безопасно создать task в текущем event loop
-                try:
-                    loop = asyncio.get_running_loop()
-                    # Если loop запущен, создаём task
-                    if self.on_price_update:
-                        loop.create_task(self.on_price_update(self.positions[symbol]))
-                    loop.create_task(self._check_auto_actions(symbol))
-                except RuntimeError:
-                    # Если нет running loop, создаём новый в отдельном task
-                    # Это безопасный способ для WebSocket callbacks
-                    try:
-                        loop = asyncio.get_event_loop()
-                        if loop.is_running():
-                            if self.on_price_update:
-                                asyncio.create_task(self.on_price_update(self.positions[symbol]))
-                            asyncio.create_task(self._check_auto_actions(symbol))
-                        else:
-                            # Если loop не запущен, создаём новый
-                            asyncio.run(self._process_update_async(symbol))
-                    except Exception as e:
-                        logger.warning(f"Could not create async task for position update: {e}")
+                # Emit price update event
+                if self.on_price_update:
+                    asyncio.create_task(self.on_price_update(self.positions[symbol]))
+                
+                # Check auto-actions
+                asyncio.create_task(self._check_auto_actions(symbol))
                 
         except Exception as e:
-            logger.error(f"Error handling position update: {e}", exc_info=True)
-    
-    async def _process_update_async(self, symbol: str):
-        """Вспомогательная функция для async обработки обновлений"""
-        if self.on_price_update:
-            await self.on_price_update(self.positions[symbol])
-        await self._check_auto_actions(symbol)
+            logger.error(f"Error handling position update: {e}")
     
     async def _check_auto_actions(self, symbol: str):
         """Проверка и выполнение автоматических действий"""
@@ -198,23 +170,11 @@ class PositionMonitor:
         self.monitoring = False
         
         if self.ws:
-            try:
-                # Пробуем закрыть WebSocket если есть метод exit
-                if hasattr(self.ws, 'exit'):
-                    self.ws.exit()
-                elif hasattr(self.ws, 'close'):
-                    self.ws.close()
-                # Очищаем ссылку
-                self.ws = None
-                logger.info("WebSocket connection closed")
-            except Exception as e:
-                logger.warning(f"Error closing WebSocket: {e}")
-                self.ws = None
+            # Закрыть WebSocket
+            # Note: pybit WebSocket не имеет явного close, закроется при exit
+            self.ws = None
         
-        # Очищаем данные позиций
-        self.positions.clear()
-        
-        logger.info("✅ Position monitoring stopped successfully")
+        logger.info("✅ Monitoring stopped")
     
     def set_callbacks(
         self,

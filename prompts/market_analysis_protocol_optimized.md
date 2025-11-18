@@ -56,11 +56,13 @@
    Green: 62% | Red: 38%
 
 🔍 Найдено возможностей:
-   - Long candidates: 12 (score >= 6.0)
-   - Short candidates: 8 (score >= 6.0)
+   📈 Long candidates: 12 (score >= 6.0)
+   📉 Short candidates: 8 (score >= 6.0)
    - Oversold: 5
    - Breakouts: 3
    - Reversals: 4
+
+⚠️ ВАЖНО: Показывай ОБА направления в финальном отчете!
 ```
 
 ---
@@ -140,7 +142,9 @@
 🎯 ТОП ВОЗМОЖНОСТИ
 ═══════════════════════════════════════
 
-━━━━ ВОЗМОЖНОСТЬ #1 ━━━━
+📈 LONG ВОЗМОЖНОСТИ:
+
+━━━━ LONG #1 ━━━━
 
 💎 SOL/USDT - Score: 8.5/10 ⭐
 💵 Цена: $145.50 (+8.5%)
@@ -157,6 +161,26 @@
 ⚡ R:R: 1:2.5
 
 ✅ РЕКОМЕНДАЦИЯ: ОТКРЫВАТЬ
+
+📉 SHORT ВОЗМОЖНОСТИ:
+
+━━━━ SHORT #1 ━━━━
+
+🔴 ETH/USDT - Score: 7.8/10 ⚠️
+💵 Цена: $2,450 (-3.2%)
+
+📊 АНАЛИЗ (из scan_market results):
+   - Multi-TF: 3/4 aligned ✅
+   - Indicators: 6/7 confirmed ✅
+   - Pattern: Bear Flag (72% success)
+   - Volume: 1.8x average ✅
+   - BTC: Supports SHORT ✅
+
+🔍 CONFLUENCE: 7.8/10
+📊 Probability: 68%
+⚡ R:R: 1:2.0
+
+⚠️ РЕКОМЕНДАЦИЯ: ОСТОРОЖНО (score < 8.0, но BTC в downtrend)
 ```
 
 ---

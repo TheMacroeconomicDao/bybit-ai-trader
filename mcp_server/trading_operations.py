@@ -14,6 +14,8 @@ import requests
 import hmac
 import hashlib
 import json
+import uuid
+import aiohttp
 
 
 class BalanceCache:
@@ -234,10 +236,20 @@ def get_all_account_balances(
                     
                     if target_coin:
                         wallet_balance_str = target_coin.get("walletBalance", "0")
-                        available_str = target_coin.get("availableToWithdraw", "0")
+                        # Пробуем разные поля для available баланса
+                        available_str = (
+                            target_coin.get("availableToWithdraw", "0") or 
+                            target_coin.get("availableBalance", "0") or
+                            target_coin.get("walletBalance", "0")  # Fallback на walletBalance
+                        )
                         
                         total = float(wallet_balance_str) if wallet_balance_str and wallet_balance_str != "" else 0.0
                         available = float(available_str) if available_str and available_str != "" else 0.0
+                        
+                        # Если available = 0, но total > 0, возможно средства заблокированы в ордерах
+                        # Используем walletBalance как available для UNIFIED счета
+                        if available == 0.0 and total > 0.0 and account_type == "UNIFIED":
+                            available = total
                         
                         # Сохраняем в правильный ключ
                         key = account_type.lower()
@@ -769,7 +781,17 @@ class TradingOperations:
                         logger.error(f"Pybit fallback also failed: {pybit_error}")
                         raise Exception(f"Failed to place order via both direct HTTP and Pybit: {str(http_error)}")
                 else:
-                    raise Exception(f"Failed to place {category} order via direct HTTP: {str(http_error)}")
+                    # Улучшенная обработка ошибки подписи API
+                    error_str = str(http_error)
+                    if "10004" in error_str or "Signature" in error_str:
+                        return {
+                            "success": False,
+                            "error": f"API signature error: {error_str}",
+                            "message": f"API signature validation failed. This may occur with test orders or invalid API credentials. Error: {error_str}",
+                            "symbol": symbol,
+                            "category": category
+                        }
+                    raise Exception(f"Failed to place {category} order via direct HTTP: {error_str}")
             
             # Безопасная проверка и нормализация ответа
             # Pybit может возвращать ответ в разных форматах
@@ -887,6 +909,19 @@ class TradingOperations:
             else:
                 error_msg = f"Order failed (retCode={ret_code}): {ret_msg}"
                 logger.error(error_msg)
+                
+                # Улучшенная обработка ошибки подписи API
+                if ret_code == 10004:
+                    return {
+                        "success": False,
+                        "error": f"API signature error (retCode={ret_code}): {ret_msg}",
+                        "message": f"API signature validation failed. This may occur with test orders or invalid API credentials. Error: {ret_msg}",
+                        "symbol": symbol,
+                        "category": category,
+                        "ret_code": ret_code,
+                        "ret_msg": ret_msg
+                    }
+                
                 raise Exception(error_msg)
                 
         except KeyError as e:
@@ -1161,19 +1196,26 @@ class TradingOperations:
                 
                 if positions.get("retCode") != 0:
                     # Если нет позиций - это нормально
-                    if "10001" in str(positions.get("retMsg", "")) or "not found" in str(positions.get("retMsg", "")).lower():
+                    error_msg = positions.get("retMsg", "")
+                    if "10001" in str(positions.get("retCode", "")) or "not found" in str(error_msg).lower() or "no position" in str(error_msg).lower():
                         return {
                             "success": False,
-                            "message": f"No open position found for {symbol}"
+                            "error": f"No open position found for {symbol}",
+                            "message": f"No open position found for {symbol}. Please open a position first.",
+                            "symbol": symbol,
+                            "category": category
                         }
-                    raise Exception(f"Failed to get positions: {positions.get('retMsg')}")
+                    raise Exception(f"Failed to get positions: {error_msg}")
                 
                 position_list = positions.get("result", {}).get("list", [])
                 
                 if not position_list or len(position_list) == 0:
                     return {
                         "success": False,
-                        "message": f"No open position found for {symbol}"
+                        "error": f"No open position found for {symbol}",
+                        "message": f"No open position found for {symbol}. Please open a position first.",
+                        "symbol": symbol,
+                        "category": category
                     }
                 
                 position = position_list[0]
@@ -1182,7 +1224,10 @@ class TradingOperations:
                 if position_size == 0:
                     return {
                         "success": False,
-                        "message": f"Position size is 0 for {symbol}"
+                        "error": f"Position size is 0 for {symbol}",
+                        "message": f"Position size is 0 for {symbol}. Please open a position first.",
+                        "symbol": symbol,
+                        "category": category
                     }
                 
                 # Определяем сторону для закрытия
@@ -1267,17 +1312,6 @@ class TradingOperations:
                 position = position_list[0]
                 position_idx = position.get("positionIdx", 0)
             
-            params = {
-                "category": category,
-                "symbol": symbol,
-                "positionIdx": position_idx
-            }
-            
-            if stop_loss:
-                params["stopLoss"] = str(stop_loss)
-            if take_profit:
-                params["takeProfit"] = str(take_profit)
-            
             # Проверяем что хотя бы один параметр указан
             if not stop_loss and not take_profit:
                 raise Exception("At least one of stop_loss or take_profit must be provided")
@@ -1288,8 +1322,33 @@ class TradingOperations:
             if take_profit and take_profit <= 0:
                 raise Exception(f"Take profit must be positive. Got: {take_profit}")
             
-            logger.debug(f"Modifying position params: {params}")
-            response = self.session.set_trading_stop(**params)
+            # Формируем параметры для set_trading_stop
+            # ВАЖНО: category передается как именованный параметр, не в словаре
+            params = {
+                "symbol": symbol,
+                "positionIdx": position_idx
+            }
+            
+            if stop_loss:
+                params["stopLoss"] = str(stop_loss)
+            if take_profit:
+                params["takeProfit"] = str(take_profit)
+            
+            logger.debug(f"Modifying position params: category={category}, params={params}")
+            
+            # Вызываем set_trading_stop
+            # Пробуем разные способы передачи category
+            try:
+                # Способ 1: category как именованный параметр
+                response = self.session.set_trading_stop(
+                    category=category,
+                    **params
+                )
+            except (KeyError, TypeError) as e:
+                # Способ 2: category внутри словаря params
+                logger.debug(f"Method 1 failed, trying method 2: {e}")
+                params_with_category = {**params, "category": category}
+                response = self.session.set_trading_stop(**params_with_category)
             
             # Безопасная проверка ответа
             if not isinstance(response, dict):
@@ -1346,17 +1405,34 @@ class TradingOperations:
             if category not in ["spot", "linear", "inverse"]:
                 raise ValueError(f"Category must be 'spot', 'linear', or 'inverse'. Got: {category}")
             
-            response = self.session.cancel_order(
-                category=category,
-                symbol=symbol,
-                orderId=order_id
-            )
+            logger.debug(f"Cancelling order params: category={category}, symbol={symbol}, orderId={order_id}")
+            
+            # Пробуем разные способы передачи параметров
+            try:
+                # Способ 1: все параметры как именованные
+                response = self.session.cancel_order(
+                    category=category,
+                    symbol=symbol,
+                    orderId=order_id
+                )
+            except (KeyError, TypeError) as e:
+                # Способ 2: category внутри словаря
+                logger.debug(f"Method 1 failed, trying method 2: {e}")
+                params = {
+                    "category": category,
+                    "symbol": symbol,
+                    "orderId": order_id
+                }
+                response = self.session.cancel_order(**params)
             
             # Безопасная проверка ответа
             if not isinstance(response, dict):
                 raise Exception(f"Unexpected response type: {type(response)}")
             
-            if response.get("retCode") == 0:
+            ret_code = response.get("retCode")
+            ret_msg = response.get("retMsg", "Unknown error")
+            
+            if ret_code == 0:
                 logger.info(f"Order cancelled successfully: {order_id}")
                 return {
                     "success": True,
@@ -1366,7 +1442,21 @@ class TradingOperations:
                     "message": "Order cancelled successfully"
                 }
             else:
-                raise Exception(f"Cancel failed: {response.get('retMsg')}")
+                # Улучшенная обработка ошибок
+                error_msg = f"Cancel failed (retCode={ret_code}): {ret_msg}"
+                
+                # Если ордер не найден - это нормально для тестов
+                if ret_code == 10001 or "not found" in str(ret_msg).lower() or "does not exist" in str(ret_msg).lower():
+                    return {
+                        "success": False,
+                        "error": f"Order {order_id} not found",
+                        "message": f"Order {order_id} not found for {symbol}. It may have been already cancelled or filled.",
+                        "order_id": order_id,
+                        "symbol": symbol,
+                        "category": category
+                    }
+                
+                raise Exception(error_msg)
                 
         except Exception as e:
             logger.error(f"Error cancelling order: {e}", exc_info=True)
@@ -1597,17 +1687,38 @@ class TradingOperations:
             
             if positions.get("retCode") != 0:
                 error_msg = positions.get('retMsg', 'Unknown error')
+                # Улучшенная обработка: если нет позиции, возвращаем понятное сообщение
+                if "10001" in str(positions.get("retCode", "")) or "not found" in str(error_msg).lower() or "no position" in str(error_msg).lower():
+                    return {
+                        "success": False,
+                        "error": f"No open position found for {symbol}",
+                        "message": f"No open position found for {symbol}. Please open a position first.",
+                        "symbol": symbol,
+                        "category": category
+                    }
                 raise Exception(f"Failed to get position: {error_msg}")
             
             position_list = positions.get("result", {}).get("list", [])
             if not position_list or len(position_list) == 0:
-                raise Exception(f"No open position found for {symbol}")
+                return {
+                    "success": False,
+                    "error": f"No open position found for {symbol}",
+                    "message": f"No open position found for {symbol}. Please open a position first.",
+                    "symbol": symbol,
+                    "category": category
+                }
             
             position = position_list[0]
             position_size = float(position.get("size", 0))
             
             if position_size == 0:
-                raise Exception(f"Position size is 0 for {symbol}")
+                return {
+                    "success": False,
+                    "error": f"Position size is 0 for {symbol}",
+                    "message": f"Position size is 0 for {symbol}. Please open a position first.",
+                    "symbol": symbol,
+                    "category": category
+                }
             
             current_price = float(position.get("markPrice", 0))
             side = position.get("side")
@@ -1621,14 +1732,28 @@ class TradingOperations:
             
             # Устанавливаем trailing stop в Bybit API
             # trailingStop должен быть строкой с процентом
+            # ВАЖНО: category передается как именованный параметр, не в словаре
             params = {
-                "category": category,
                 "symbol": symbol,
                 "positionIdx": position_idx,
                 "trailingStop": str(trailing_distance)  # В процентах
             }
             
-            response = self.session.set_trading_stop(**params)
+            logger.debug(f"Activating trailing stop params: category={category}, params={params}")
+            
+            # Вызываем set_trading_stop
+            # Пробуем разные способы передачи category
+            try:
+                # Способ 1: category как именованный параметр
+                response = self.session.set_trading_stop(
+                    category=category,
+                    **params
+                )
+            except (KeyError, TypeError) as e:
+                # Способ 2: category внутри словаря params
+                logger.debug(f"Method 1 failed, trying method 2: {e}")
+                params_with_category = {**params, "category": category}
+                response = self.session.set_trading_stop(**params_with_category)
             
             if response.get("retCode") == 0:
                 logger.info(f"Trailing stop activated successfully for {symbol}")
@@ -1649,8 +1774,105 @@ class TradingOperations:
                 
         except Exception as e:
             logger.error(f"Error activating trailing stop: {e}", exc_info=True)
+        return {
+            "success": False,
+            "error": str(e),
+            "message": f"Failed to activate trailing stop: {str(e)}"
+        }
+    
+    async def transfer_funds(
+        self,
+        from_account_type: str,
+        to_account_type: str,
+        coin: str,
+        amount: float,
+        transfer_id: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        Перевод средств между счетами
+        
+        Args:
+            from_account_type: Тип счета-источника ("UNIFIED", "SPOT", "CONTRACT")
+            to_account_type: Тип счета-получателя ("UNIFIED", "SPOT", "CONTRACT")
+            coin: Монета для перевода (например "USDT")
+            amount: Сумма для перевода
+            transfer_id: Уникальный ID перевода (опционально, генерируется автоматически)
+            
+        Returns:
+            Результат перевода
+        """
+        logger.info(f"Transferring {amount} {coin} from {from_account_type} to {to_account_type}")
+        
+        try:
+            # Генерируем transfer_id если не указан
+            if not transfer_id:
+                transfer_id = str(uuid.uuid4())
+            
+            # Подготовка параметров
+            params = {
+                "fromAccountType": from_account_type,
+                "toAccountType": to_account_type,
+                "coin": coin,
+                "amount": str(amount),
+                "transferId": transfer_id
+            }
+            
+            # Генерация подписи
+            timestamp = int(time.time() * 1000)
+            recv_window = 5000
+            signature = self._generate_signature(params, timestamp, recv_window, use_json_body=True)
+            
+            # Заголовки
+            headers = {
+                "X-BAPI-SIGN-TYPE": "2",
+                "X-BAPI-SIGN": signature,
+                "X-BAPI-API-KEY": self.api_key,
+                "X-BAPI-TIMESTAMP": str(timestamp),
+                "X-BAPI-RECV-WINDOW": str(recv_window),
+                "Content-Type": "application/json"
+            }
+            
+            # URL для перевода
+            url = f"{self.base_url}/v5/asset/transfer/inter-transfer"
+            
+            # Выполняем запрос
+            async with aiohttp.ClientSession() as session:
+                async with session.post(url, json=params, headers=headers) as response:
+                    response_data = await response.json()
+                    
+                    ret_code = response_data.get("retCode")
+                    ret_msg = response_data.get("retMsg", "")
+                    
+                    if ret_code == 0:
+                        logger.info(f"Transfer successful: {amount} {coin} from {from_account_type} to {to_account_type}")
+                        return {
+                            "success": True,
+                            "from_account": from_account_type,
+                            "to_account": to_account_type,
+                            "coin": coin,
+                            "amount": amount,
+                            "transfer_id": transfer_id,
+                            "message": f"Successfully transferred {amount} {coin} from {from_account_type} to {to_account_type}",
+                            "raw_response": response_data
+                        }
+                    else:
+                        error_msg = f"Transfer failed (retCode={ret_code}): {ret_msg}"
+                        logger.error(error_msg)
+                        return {
+                            "success": False,
+                            "error": error_msg,
+                            "ret_code": ret_code,
+                            "ret_msg": ret_msg,
+                            "from_account": from_account_type,
+                            "to_account": to_account_type,
+                            "coin": coin,
+                            "amount": amount
+                        }
+                        
+        except Exception as e:
+            logger.error(f"Error transferring funds: {e}", exc_info=True)
             return {
                 "success": False,
                 "error": str(e),
-                "message": f"Failed to activate trailing stop: {str(e)}"
+                "message": f"Failed to transfer funds: {str(e)}"
             }

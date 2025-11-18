@@ -836,6 +836,145 @@ class BybitClient:
                 "timestamp": datetime.now().isoformat()
             }
     
+    async def get_open_interest(self, symbol: str, category: str = "linear") -> Dict[str, Any]:
+        """
+        Получить Open Interest для futures
+        
+        Args:
+            symbol: Торговая пара (например "BTCUSDT")
+            category: "linear" или "inverse" (default: "linear")
+            
+        Returns:
+            Open Interest данные с анализом тренда и интерпретацией
+        """
+        logger.info(f"Getting Open Interest for {symbol} ({category})")
+        
+        try:
+            # Используем прямой HTTP запрос к Bybit API v5
+            base_url = "https://api-testnet.bybit.com" if self.testnet else "https://api.bybit.com"
+            endpoint = "/v5/market/open-interest"
+            url = f"{base_url}{endpoint}"
+            
+            params = {
+                "category": category,
+                "symbol": symbol,
+                "intervalTime": "5min"  # Исправлено: intervalTime вместо intervalType
+            }
+            
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, params=params) as response:
+                    if response.status == 200:
+                        data = await response.json()
+                        if data.get("retCode") == 0:
+                            result = data.get("result", {})
+                            oi_list = result.get("list", [])
+                            
+                            if not oi_list:
+                                raise ValueError(f"No Open Interest data for {symbol}")
+                            
+                            # Текущий OI (последний элемент)
+                            current_oi = float(oi_list[-1].get("openInterest", 0))
+                            
+                            # Получаем историю для анализа тренда
+                            # Запрашиваем больше данных для анализа
+                            params_history = {
+                                "category": category,
+                                "symbol": symbol,
+                                "intervalTime": "5min",  # Исправлено: intervalTime вместо intervalType
+                                "limit": "50"  # 50 точек = ~4 часа истории
+                            }
+                            
+                            async with session.get(url, params=params_history) as hist_response:
+                                if hist_response.status == 200:
+                                    hist_data = await hist_response.json()
+                                    if hist_data.get("retCode") == 0:
+                                        hist_result = hist_data.get("result", {})
+                                        hist_oi_list = hist_result.get("list", [])
+                                        
+                                        if len(hist_oi_list) >= 2:
+                                            # Первый элемент (старый)
+                                            old_oi = float(hist_oi_list[0].get("openInterest", 0))
+                                            
+                                            # Изменение за период
+                                            oi_change = current_oi - old_oi
+                                            oi_change_pct = (oi_change / old_oi * 100) if old_oi > 0 else 0
+                                            
+                                            # Изменение за 24 часа (если есть достаточно данных)
+                                            if len(hist_oi_list) >= 10:
+                                                oi_24h_ago = float(hist_oi_list[0].get("openInterest", 0))
+                                                oi_change_24h = current_oi - oi_24h_ago
+                                                oi_change_24h_pct = (oi_change_24h / oi_24h_ago * 100) if oi_24h_ago > 0 else 0
+                                            else:
+                                                oi_change_24h = 0
+                                                oi_change_24h_pct = 0
+                                        else:
+                                            oi_change = 0
+                                            oi_change_pct = 0
+                                            oi_change_24h = 0
+                                            oi_change_24h_pct = 0
+                                    else:
+                                        oi_change = 0
+                                        oi_change_pct = 0
+                                        oi_change_24h = 0
+                                        oi_change_24h_pct = 0
+                                else:
+                                    oi_change = 0
+                                    oi_change_pct = 0
+                                    oi_change_24h = 0
+                                    oi_change_24h_pct = 0
+                            
+                            # Интерпретация изменения OI
+                            if oi_change_24h_pct > 5:
+                                interpretation = "Сильное накопление позиций. Вероятен сильный движение."
+                                trend = "accumulation"
+                                signal_strength = "strong"
+                            elif oi_change_24h_pct > 2:
+                                interpretation = "Умеренное накопление. Поддержка текущего тренда."
+                                trend = "accumulation"
+                                signal_strength = "moderate"
+                            elif oi_change_24h_pct < -5:
+                                interpretation = "Сильное распределение. Возможен разворот."
+                                trend = "distribution"
+                                signal_strength = "strong"
+                            elif oi_change_24h_pct < -2:
+                                interpretation = "Умеренное распределение. Ослабление тренда."
+                                trend = "distribution"
+                                signal_strength = "moderate"
+                            else:
+                                interpretation = "Стабильный OI. Консолидация."
+                                trend = "stable"
+                                signal_strength = "weak"
+                            
+                            return {
+                                "symbol": symbol,
+                                "category": category,
+                                "open_interest": current_oi,
+                                "change_24h": round(oi_change_24h, 2),
+                                "change_24h_pct": round(oi_change_24h_pct, 2),
+                                "change_recent": round(oi_change, 2),
+                                "change_recent_pct": round(oi_change_pct, 2),
+                                "trend": trend,
+                                "signal_strength": signal_strength,
+                                "interpretation": interpretation,
+                                "timestamp": datetime.now().isoformat()
+                            }
+                        else:
+                            raise Exception(f"Bybit API error: {data.get('retMsg', 'Unknown error')}")
+                    else:
+                        raise Exception(f"HTTP {response.status}: {await response.text()}")
+                        
+        except Exception as e:
+            logger.error(f"Error getting Open Interest for {symbol}: {e}", exc_info=True)
+            return {
+                "symbol": symbol,
+                "category": category,
+                "open_interest": 0.0,
+                "change_24h_pct": 0.0,
+                "trend": "unknown",
+                "interpretation": f"Ошибка получения Open Interest: {str(e)}",
+                "timestamp": datetime.now().isoformat()
+            }
+    
     async def close_position(self, symbol: str, reason: str = "Manual close") -> Dict[str, Any]:
         """
         Закрыть открытую позицию

@@ -63,10 +63,10 @@ class MarketScanner:
         
         # Детальный анализ для отфильтрованных с параллелизацией
         # Ограничиваем количество для анализа (топ по объёму)
-        candidates = filtered[:min(limit * 3, 50)]  # Максимум 50 кандидатов
+        candidates = filtered[:min(limit * 5, 100)]  # Максимум 100 кандидатов (было 50)
         
         # Параллельный анализ с ограничением одновременных запросов
-        semaphore = asyncio.Semaphore(5)  # Максимум 5 параллельно
+        semaphore = asyncio.Semaphore(10)  # Максимум 10 параллельно (было 5)
         
         async def analyze_ticker(ticker: Dict[str, Any]) -> Optional[Dict[str, Any]]:
             """Анализ одного тикера с обработкой ошибок"""
@@ -166,27 +166,32 @@ class MarketScanner:
         return True
     
     def _calculate_opportunity_score(self, analysis: Dict, ticker: Dict) -> float:
-        """Расчёт scoring возможности (0-10)"""
+        """Расчёт scoring возможности (0-10) для ЛЮБОГО направления"""
         
         score = 5.0  # Базовый score
         
         composite = analysis.get('composite_signal', {})
+        signal = composite.get('signal', 'HOLD')
         
-        # Composite signal strength
-        if composite.get('signal') == 'STRONG_BUY':
+        # Определяем направление по сигналу
+        is_long_signal = signal in ['STRONG_BUY', 'BUY']
+        is_short_signal = signal in ['STRONG_SELL', 'SELL']
+        
+        # Composite signal strength (для обоих направлений)
+        if signal == 'STRONG_BUY':
             score += 2.5
-        elif composite.get('signal') == 'BUY':
+        elif signal == 'BUY':
             score += 1.5
-        elif composite.get('signal') == 'STRONG_SELL':
-            score -= 2.5
-        elif composite.get('signal') == 'SELL':
-            score -= 1.5
+        elif signal == 'STRONG_SELL':
+            score += 2.5  # Для шортов STRONG_SELL это хорошо!
+        elif signal == 'SELL':
+            score += 1.5  # Для шортов SELL это хорошо!
         
         # Confidence
         confidence = composite.get('confidence', 0.5)
         score += (confidence - 0.5) * 3  # -1.5 to +1.5
         
-        # Alignment
+        # Alignment (для обоих направлений)
         alignment = composite.get('alignment', 0.5)
         if alignment > 0.75:
             score += 1.5
@@ -216,21 +221,44 @@ class MarketScanner:
         return round(min(0.95, max(0.3, adjusted_prob)), 2)
     
     def _generate_entry_plan(self, analysis: Dict, ticker: Dict) -> Dict[str, Any]:
-        """Генерация плана входа"""
+        """Генерация плана входа (для LONG или SHORT)"""
         
         current_price = ticker['price']
         h4_indicators = analysis['timeframes'].get('4h', {}).get('indicators', {})
         atr = h4_indicators.get('atr', {}).get('atr_14', current_price * 0.02)
         
-        # Расчёт SL и TP
-        stop_loss = current_price - (atr * 2)
-        take_profit = current_price + (atr * 4)
+        # Определяем направление по сигналу
+        composite = analysis.get('composite_signal', {})
+        signal = composite.get('signal', 'HOLD')
         
-        risk = current_price - stop_loss
-        reward = take_profit - current_price
+        is_long = signal in ['STRONG_BUY', 'BUY']
+        is_short = signal in ['STRONG_SELL', 'SELL']
+        
+        # Если нет четкого сигнала, определяем по количеству buy/sell сигналов
+        if not is_long and not is_short:
+            buy_signals = composite.get('buy_signals', 0)
+            sell_signals = composite.get('sell_signals', 0)
+            is_long = buy_signals > sell_signals
+            is_short = sell_signals > buy_signals
+        
+        # Расчёт SL и TP в зависимости от направления
+        if is_short:
+            # SHORT: SL выше цены, TP ниже цены
+            stop_loss = current_price + (atr * 2)
+            take_profit = current_price - (atr * 4)
+            side = "short"
+        else:
+            # LONG: SL ниже цены, TP выше цены (по умолчанию)
+            stop_loss = current_price - (atr * 2)
+            take_profit = current_price + (atr * 4)
+            side = "long"
+        
+        risk = abs(current_price - stop_loss)
+        reward = abs(take_profit - current_price)
         risk_reward = reward / risk if risk > 0 else 0
         
         return {
+            "side": side,
             "entry_price": round(current_price, 2),
             "stop_loss": round(stop_loss, 2),
             "take_profit": round(take_profit, 2),
@@ -312,6 +340,58 @@ class MarketScanner:
         
         return results[:10]
     
+    async def find_overbought_assets(
+        self,
+        market_type: str = "spot",
+        min_volume_24h: float = 1000000
+    ) -> List[Dict[str, Any]]:
+        """
+        Найти перекупленные активы (RSI > 70) для SHORT позиций
+        
+        Args:
+            market_type: "spot" или "futures"
+            min_volume_24h: Минимальный объём за 24ч
+            
+        Returns:
+            Список перекупленных активов (шорты)
+        """
+        logger.info(f"Finding overbought assets on {market_type}")
+        
+        # Сначала строгие критерии (RSI > 70)
+        strict_criteria = {
+            "market_type": market_type,
+            "min_volume_24h": min_volume_24h,
+            "indicators": {
+                "rsi_range": [70, 100]
+            }
+        }
+        
+        results = await self.scan_market(strict_criteria, limit=10)
+        
+        # Если мало результатов - смягчаем критерии (RSI > 65)
+        if len(results) < 5:
+            logger.info(f"Only {len(results)} results with RSI > 70, trying softer criteria (RSI > 65)")
+            soft_criteria = {
+                "market_type": market_type,
+                "min_volume_24h": min_volume_24h,
+                "indicators": {
+                    "rsi_range": [65, 100]
+                }
+            }
+            soft_results = await self.scan_market(soft_criteria, limit=10)
+            
+            # Объединяем результаты, убирая дубликаты
+            seen_symbols = {r['symbol'] for r in results}
+            for r in soft_results:
+                if r['symbol'] not in seen_symbols:
+                    results.append(r)
+                    seen_symbols.add(r['symbol'])
+            
+            # Сортируем по score
+            results.sort(key=lambda x: x['score'], reverse=True)
+        
+        return results[:10]
+    
     async def find_breakout_opportunities(
         self,
         market_type: str = "spot",
@@ -336,10 +416,10 @@ class MarketScanner:
         filtered = [
             t for t in all_tickers 
             if t['volume_24h'] >= min_volume_24h
-        ][:50]  # Максимум 50 для анализа
+        ][:100]  # Максимум 100 для анализа (было 50)
         
         # Параллельный анализ
-        semaphore = asyncio.Semaphore(5)
+        semaphore = asyncio.Semaphore(10)  # Увеличено с 5 до 10
         
         async def check_breakout(ticker: Dict[str, Any]) -> Optional[Dict[str, Any]]:
             """Проверка одного тикера на BB squeeze"""
