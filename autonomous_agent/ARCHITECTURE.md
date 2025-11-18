@@ -212,3 +212,4 @@ python -m autonomous_agent.main
 3. **Новые форматы вывода** - добавьте в `TelegramFormatter`
 4. **Интеграция с другими AI** - добавьте новые клиенты
 
+

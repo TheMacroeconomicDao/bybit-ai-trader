@@ -16,6 +16,7 @@ class TechnicalAnalysis:
     
     def __init__(self, bybit_client):
         self.client = bybit_client
+        self._btc_cache = {"data": None, "timestamp": 0}
         logger.info("Technical Analysis engine initialized")
     
     async def analyze_asset(
@@ -54,6 +55,13 @@ class TechnicalAnalysis:
         
         # Composite signal (объединённый сигнал)
         results["composite_signal"] = self._generate_composite_signal(results["timeframes"])
+        
+        # BTC Correlation (если это не BTC)
+        if "BTC" not in symbol and "btc" not in symbol.lower():
+            try:
+                results["btc_correlation"] = await self.get_btc_correlation(symbol)
+            except Exception as e:
+                logger.warning(f"Could not calculate BTC correlation for {symbol}: {e}")
         
         return results
     
@@ -718,7 +726,7 @@ class TechnicalAnalysis:
         timeframe: str = "1h"
     ) -> Dict[str, Any]:
         """
-        Рассчитать корреляцию актива с BTC
+        Рассчитать корреляцию актива с BTC (с кэшированием BTC данных)
         
         Args:
             symbol: Торговая пара (например "ETH/USDT")
@@ -728,7 +736,7 @@ class TechnicalAnalysis:
         Returns:
             Корреляция и анализ
         """
-        logger.info(f"Calculating BTC correlation for {symbol}")
+        # logger.info(f"Calculating BTC correlation for {symbol}")
         
         try:
             # Получаем данные для актива
@@ -736,8 +744,19 @@ class TechnicalAnalysis:
             alt_df = pd.DataFrame(alt_data, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
             alt_returns = alt_df['close'].pct_change().dropna()
             
-            # Получаем данные для BTC
-            btc_data = await self.client.get_ohlcv("BTC/USDT", timeframe, limit=period)
+            # Получаем данные для BTC (с кэшированием на 5 минут)
+            import time
+            now_ts = time.time()
+            
+            # Проверяем кэш: данные должны быть, timestamp свежий, и длина достаточная
+            if (self._btc_cache.get("data") is not None and 
+                (now_ts - self._btc_cache.get("timestamp", 0) < 300) and
+                len(self._btc_cache["data"]) >= period):
+                btc_data = self._btc_cache["data"]
+            else:
+                btc_data = await self.client.get_ohlcv("BTC/USDT", timeframe, limit=period)
+                self._btc_cache = {"data": btc_data, "timestamp": now_ts}
+            
             btc_df = pd.DataFrame(btc_data, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
             btc_returns = btc_df['close'].pct_change().dropna()
             
@@ -785,7 +804,7 @@ class TechnicalAnalysis:
                 "timestamp": datetime.now().isoformat()
             }
         except Exception as e:
-            logger.error(f"Error calculating BTC correlation: {e}", exc_info=True)
+            logger.error(f"Error calculating BTC correlation: {e}")
             return {
                 "symbol": symbol,
                 "success": False,

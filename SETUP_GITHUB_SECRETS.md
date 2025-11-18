@@ -65,3 +65,4 @@ gh secret list
 
 См. `GITHUB_SECRETS_SETUP.md` для детальной информации.
 
+

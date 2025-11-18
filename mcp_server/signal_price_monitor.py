@@ -8,8 +8,12 @@ from typing import Dict, Any, Optional, List
 from datetime import datetime, timedelta
 from loguru import logger
 
-from mcp_server.signal_tracker import SignalTracker
-from mcp_server.bybit_client import BybitClient
+try:
+    from .signal_tracker import SignalTracker
+    from .bybit_client import BybitClient
+except ImportError:
+    from signal_tracker import SignalTracker
+    from bybit_client import BybitClient
 
 
 class SignalPriceMonitor:
@@ -141,6 +145,31 @@ class SignalPriceMonitor:
             
             # Записываем snapshot
             await self.tracker.record_price_snapshot(signal_id, current_price)
+            
+            # Обновляем Telegram пост если есть message_ids
+            try:
+                message_ids = await self.tracker.get_telegram_message_ids(signal_id)
+                if message_ids:
+                    # Импортируем только при необходимости
+                    try:
+                        from .telegram_signal_updater import TelegramSignalUpdater
+                        from .telegram_bot import TelegramBot
+                    except ImportError:
+                        from telegram_signal_updater import TelegramSignalUpdater
+                        from telegram_bot import TelegramBot
+                    
+                    # Получаем bot_token из конфигурации (можно передать через __init__)
+                    # Для простоты используем переменную окружения или конфиг
+                    import os
+                    bot_token = os.getenv("TELEGRAM_BOT_TOKEN", "")
+                    
+                    if bot_token:
+                        bot = TelegramBot(bot_token)
+                        updater = TelegramSignalUpdater(self.tracker, bot, bot_token)
+                        await updater.update_signal_post(signal_id, current_price)
+                        await bot.close()
+            except Exception as e:
+                logger.warning(f"Failed to update Telegram post for signal {signal_id}: {e}")
             
             # Определяем результат
             result = await self.determine_result(signal, current_price)

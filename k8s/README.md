@@ -54,3 +54,4 @@ kubectl logs -n trader-agent -l app=trader-agent --tail=100
 kubectl create job --from=cronjob/trader-agent-analyzer manual-test-$(date +%s) -n trader-agent
 ```
 
+

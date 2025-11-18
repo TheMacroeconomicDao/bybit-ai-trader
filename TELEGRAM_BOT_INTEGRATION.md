@@ -541,3 +541,4 @@ asyncio.run(main())
 **Дата создания:** 2025-01-13  
 **Автор:** AI Trading Assistant
 
+

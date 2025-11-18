@@ -7,13 +7,20 @@ import asyncio
 import hashlib
 import hmac
 import time
+import socket
 from typing import Any, Dict, List, Optional
 from datetime import datetime, timedelta
 
 import ccxt.async_support as ccxt
 import aiohttp
+from aiohttp import ClientTimeout, TCPConnector
 from loguru import logger
-from mcp_server.cache_manager import get_cache_manager
+
+# Условный импорт для поддержки как пакета, так и прямого запуска
+try:
+    from .cache_manager import get_cache_manager
+except ImportError:
+    from cache_manager import get_cache_manager
 
 
 class BybitClient:
@@ -37,18 +44,60 @@ class BybitClient:
         self.api_secret = api_secret
         self.testnet = testnet
         
-        # Инициализация CCXT exchange
+        # Инициализация CCXT exchange с улучшенными настройками для DNS/сети
         self.exchange = ccxt.bybit({
             'apiKey': api_key,
             'secret': api_secret,
             'enableRateLimit': True,
+            'timeout': 30000,  # 30 секунд таймаут
             'options': {
                 'defaultType': 'spot',  # По умолчанию spot
                 'testnet': testnet
+            },
+            # Улучшенные настройки для сетевых запросов
+            'headers': {
+                'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)'
             }
         })
         
+        # Создаём aiohttp сессию с улучшенными настройками DNS и таймаутов
+        self._http_session: Optional[aiohttp.ClientSession] = None
+        
         logger.info(f"Bybit client initialized ({'testnet' if testnet else 'mainnet'})")
+    
+    async def _get_http_session(self) -> aiohttp.ClientSession:
+        """Получить или создать aiohttp сессию с улучшенными настройками DNS"""
+        if self._http_session is None or self._http_session.closed:
+            # DNS resolver с fallback на публичные DNS серверы
+            resolver = aiohttp.resolver.DefaultResolver()
+            
+            # TCP connector с улучшенными настройками
+            connector = TCPConnector(
+                resolver=resolver,
+                limit=100,  # Максимум соединений
+                limit_per_host=30,  # Максимум соединений на хост
+                ttl_dns_cache=300,  # Кеш DNS на 5 минут
+                use_dns_cache=True,
+                keepalive_timeout=30,
+                enable_cleanup_closed=True
+            )
+            
+            # Таймауты: connect (DNS + TCP + SSL), read, total
+            timeout = ClientTimeout(
+                total=60,  # Общий таймаут 60 секунд
+                connect=30,  # 30 секунд на подключение (включая DNS)
+                sock_read=30  # 30 секунд на чтение
+            )
+            
+            self._http_session = aiohttp.ClientSession(
+                connector=connector,
+                timeout=timeout,
+                headers={
+                    'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)'
+                }
+            )
+        
+        return self._http_session
     
     async def get_market_overview(self, market_type: str = "both") -> Dict[str, Any]:
         """
@@ -204,9 +253,20 @@ class BybitClient:
                 }
                 
             except Exception as e:
-                error_msg = str(e)
+                error_msg = str(e).lower()
+                
+                # Проверяем на DNS ошибки
+                if any(keyword in error_msg for keyword in ["dns", "could not contact dns", "name resolution", "gaierror", "cannot connect to host"]):
+                    logger.warning(f"DNS/Network error (attempt {attempt + 1}/{max_retries}): {e}")
+                    if attempt < max_retries - 1:
+                        await asyncio.sleep(retry_delay * (2 ** attempt))
+                        continue
+                    else:
+                        logger.error(f"DNS resolution failed after {max_retries} attempts: {e}")
+                        raise Exception(f"DNS/Network Error: Failed to connect to Bybit API after {max_retries} attempts. Error: {e}")
+                
                 # Фильтруем ошибки, связанные с asset/coin/query-info
-                if "asset/coin/query-info" in error_msg.lower() or "query-info" in error_msg.lower():
+                elif "asset/coin/query-info" in error_msg or "query-info" in error_msg:
                     logger.warning(f"CCXT error with query-info endpoint (attempt {attempt + 1}/{max_retries}): {e}")
                     if attempt < max_retries - 1:
                         await asyncio.sleep(retry_delay * (2 ** attempt))
@@ -294,9 +354,33 @@ class BybitClient:
                 return ticker_list
                 
             except Exception as e:
-                error_msg = str(e)
+                error_msg = str(e).lower()
+                
+                # Проверяем на DNS ошибки
+                if any(keyword in error_msg for keyword in ["dns", "could not contact dns", "name resolution", "gaierror", "cannot connect to host"]):
+                    logger.warning(f"DNS/Network error (attempt {attempt + 1}/{max_retries}): {e}")
+                    if attempt < max_retries - 1:
+                        await asyncio.sleep(retry_delay * (2 ** attempt))
+                        continue
+                    else:
+                        # Последняя попытка - используем прямой HTTP запрос к Bybit API
+                        logger.info(f"CCXT failed due to DNS/Network error, trying direct HTTP request to Bybit API for tickers")
+                        try:
+                            ticker_list = await self._get_tickers_direct_http(market_type)
+                            if ticker_list and len(ticker_list) > 0:
+                                # Обновляем кеш
+                                self._tickers_cache[cache_key] = ticker_list
+                                self._cache_timestamps[cache_key] = now
+                                logger.debug(f"Cached tickers from direct HTTP for {cache_key}")
+                                return ticker_list
+                            else:
+                                raise Exception(f"Empty tickers list from direct HTTP")
+                        except Exception as http_error:
+                            logger.error(f"Direct HTTP also failed for tickers: {http_error}")
+                            raise Exception(f"API Error: Failed to fetch tickers after {max_retries} attempts and direct HTTP fallback. DNS/Network error: {e}, HTTP error: {http_error}")
+                
                 # Фильтруем ошибки, связанные с asset/coin/query-info
-                if "asset/coin/query-info" in error_msg.lower() or "query-info" in error_msg.lower():
+                elif "asset/coin/query-info" in error_msg or "query-info" in error_msg:
                     logger.warning(f"CCXT error with query-info endpoint (attempt {attempt + 1}/{max_retries}): {e}")
                     if attempt < max_retries - 1:
                         await asyncio.sleep(retry_delay * (2 ** attempt))
@@ -364,9 +448,20 @@ class BybitClient:
                 }
                 
             except Exception as e:
-                error_msg = str(e)
+                error_msg = str(e).lower()
+                
+                # Проверяем на DNS ошибки
+                if any(keyword in error_msg for keyword in ["dns", "could not contact dns", "name resolution", "gaierror", "cannot connect to host"]):
+                    logger.warning(f"DNS/Network error for {symbol} (attempt {attempt + 1}/{max_retries}): {e}")
+                    if attempt < max_retries - 1:
+                        await asyncio.sleep(retry_delay * (2 ** attempt))
+                        continue
+                    else:
+                        logger.error(f"DNS resolution failed for {symbol} after {max_retries} attempts: {e}")
+                        raise Exception(f"DNS/Network Error: Failed to connect to Bybit API for {symbol} after {max_retries} attempts. Error: {e}")
+                
                 # Фильтруем ошибки, связанные с asset/coin/query-info
-                if "asset/coin/query-info" in error_msg.lower() or "query-info" in error_msg.lower():
+                elif "asset/coin/query-info" in error_msg or "query-info" in error_msg:
                     logger.warning(f"CCXT error with query-info endpoint for {symbol} (attempt {attempt + 1}/{max_retries}): {e}")
                     if attempt < max_retries - 1:
                         await asyncio.sleep(retry_delay * (2 ** attempt))
@@ -434,9 +529,38 @@ class BybitClient:
                 return ohlcv
                 
             except Exception as e:
-                error_msg = str(e)
+                error_msg = str(e).lower()
+                
+                # Проверяем на DNS ошибки
+                if any(keyword in error_msg for keyword in ["dns", "could not contact dns", "name resolution", "gaierror", "cannot connect to host"]):
+                    logger.warning(f"DNS/Network error for {symbol} (attempt {attempt + 1}/{max_retries}): {e}")
+                    if attempt < max_retries - 1:
+                        await asyncio.sleep(retry_delay * (2 ** attempt))
+                        continue
+                    else:
+                        # Последняя попытка - используем прямой HTTP запрос к Bybit API
+                        logger.info(f"CCXT failed due to DNS/Network error, trying direct HTTP request to Bybit API for {symbol}")
+                        try:
+                            # Определяем category по символу (можно расширить логику)
+                            category = "spot"  # По умолчанию spot, можно определить по символу
+                            ohlcv = await self._get_ohlcv_direct_http(symbol, timeframe, limit, category)
+                            if ohlcv and len(ohlcv) > 0:
+                                # Сохраняем в кэш
+                                ttl_map = {
+                                    "1m": 10, "5m": 30, "15m": 60,
+                                    "1h": 120, "4h": 300, "1d": 600
+                                }
+                                ttl = ttl_map.get(timeframe, 60)
+                                cache.set("get_ohlcv", ohlcv, ttl=ttl, symbol=symbol, timeframe=timeframe, limit=limit)
+                                return ohlcv
+                            else:
+                                raise Exception(f"Empty OHLCV data from direct HTTP for {symbol}")
+                        except Exception as http_error:
+                            logger.error(f"Direct HTTP also failed for {symbol}: {http_error}")
+                            raise Exception(f"API Error: Failed to fetch OHLCV for {symbol} after {max_retries} attempts and direct HTTP fallback. DNS/Network error: {e}, HTTP error: {http_error}")
+                
                 # Фильтруем ошибки, связанные с asset/coin/query-info
-                if "asset/coin/query-info" in error_msg.lower() or "query-info" in error_msg.lower():
+                elif "asset/coin/query-info" in error_msg or "query-info" in error_msg:
                     logger.warning(f"CCXT error with query-info endpoint for {symbol} (attempt {attempt + 1}/{max_retries}): {e}")
                     if attempt < max_retries - 1:
                         await asyncio.sleep(retry_delay * (2 ** attempt))
@@ -513,8 +637,13 @@ class BybitClient:
             "limit": str(limit)
         }
         
-        try:
-            async with aiohttp.ClientSession() as session:
+        # Retry логика с обработкой DNS ошибок
+        max_retries = 3
+        retry_delay = 1
+        
+        for attempt in range(max_retries):
+            try:
+                session = await self._get_http_session()
                 async with session.get(url, params=params) as response:
                     if response.status == 200:
                         data = await response.json()
@@ -539,9 +668,27 @@ class BybitClient:
                             raise Exception(f"Bybit API error: {data.get('retMsg', 'Unknown error')}")
                     else:
                         raise Exception(f"HTTP {response.status}: {await response.text()}")
-        except Exception as e:
-            logger.error(f"Direct HTTP request for OHLCV failed: {e}")
-            raise
+            except (aiohttp.ClientError, socket.gaierror, OSError) as e:
+                error_msg = str(e).lower()
+                # Проверяем на DNS ошибки
+                if any(keyword in error_msg for keyword in ["dns", "could not contact dns", "name resolution", "gaierror"]):
+                    logger.warning(f"DNS error on attempt {attempt + 1}/{max_retries}: {e}")
+                    if attempt < max_retries - 1:
+                        await asyncio.sleep(retry_delay * (2 ** attempt))
+                        continue
+                    else:
+                        raise Exception(f"DNS resolution failed after {max_retries} attempts: {e}")
+                else:
+                    # Другие сетевые ошибки
+                    logger.warning(f"Network error on attempt {attempt + 1}/{max_retries}: {e}")
+                    if attempt < max_retries - 1:
+                        await asyncio.sleep(retry_delay * (2 ** attempt))
+                        continue
+                    else:
+                        raise
+            except Exception as e:
+                logger.error(f"Direct HTTP request for OHLCV failed: {e}")
+                raise
     
     async def _get_tickers_direct_http(self, market_type: str) -> List[Dict[str, Any]]:
         """
@@ -558,8 +705,13 @@ class BybitClient:
             "limit": "1000"  # Максимум для одного запроса
         }
         
-        try:
-            async with aiohttp.ClientSession() as session:
+        # Retry логика с обработкой DNS ошибок
+        max_retries = 3
+        retry_delay = 1
+        
+        for attempt in range(max_retries):
+            try:
+                session = await self._get_http_session()
                 async with session.get(url, params=params) as response:
                     if response.status == 200:
                         data = await response.json()
@@ -590,9 +742,27 @@ class BybitClient:
                             raise Exception(f"Bybit API error: {data.get('retMsg', 'Unknown error')}")
                     else:
                         raise Exception(f"HTTP {response.status}: {await response.text()}")
-        except Exception as e:
-            logger.error(f"Direct HTTP request for tickers failed: {e}")
-            raise
+            except (aiohttp.ClientError, socket.gaierror, OSError) as e:
+                error_msg = str(e).lower()
+                # Проверяем на DNS ошибки
+                if any(keyword in error_msg for keyword in ["dns", "could not contact dns", "name resolution", "gaierror"]):
+                    logger.warning(f"DNS error on attempt {attempt + 1}/{max_retries}: {e}")
+                    if attempt < max_retries - 1:
+                        await asyncio.sleep(retry_delay * (2 ** attempt))
+                        continue
+                    else:
+                        raise Exception(f"DNS resolution failed after {max_retries} attempts: {e}")
+                else:
+                    # Другие сетевые ошибки
+                    logger.warning(f"Network error on attempt {attempt + 1}/{max_retries}: {e}")
+                    if attempt < max_retries - 1:
+                        await asyncio.sleep(retry_delay * (2 ** attempt))
+                        continue
+                    else:
+                        raise
+            except Exception as e:
+                logger.error(f"Direct HTTP request for tickers failed: {e}")
+                raise
     
     async def get_orderbook(self, symbol: str, limit: int = 25) -> Dict[str, Any]:
         """
@@ -849,19 +1019,24 @@ class BybitClient:
         """
         logger.info(f"Getting Open Interest for {symbol} ({category})")
         
-        try:
-            # Используем прямой HTTP запрос к Bybit API v5
-            base_url = "https://api-testnet.bybit.com" if self.testnet else "https://api.bybit.com"
-            endpoint = "/v5/market/open-interest"
-            url = f"{base_url}{endpoint}"
-            
-            params = {
-                "category": category,
-                "symbol": symbol,
-                "intervalTime": "5min"  # Исправлено: intervalTime вместо intervalType
-            }
-            
-            async with aiohttp.ClientSession() as session:
+        # Retry логика с обработкой DNS ошибок
+        max_retries = 3
+        retry_delay = 1
+        
+        for attempt in range(max_retries):
+            try:
+                # Используем прямой HTTP запрос к Bybit API v5
+                base_url = "https://api-testnet.bybit.com" if self.testnet else "https://api.bybit.com"
+                endpoint = "/v5/market/open-interest"
+                url = f"{base_url}{endpoint}"
+                
+                params = {
+                    "category": category,
+                    "symbol": symbol,
+                    "intervalTime": "5min"  # Исправлено: intervalTime вместо intervalType
+                }
+                
+                session = await self._get_http_session()
                 async with session.get(url, params=params) as response:
                     if response.status == 200:
                         data = await response.json()
@@ -963,17 +1138,44 @@ class BybitClient:
                     else:
                         raise Exception(f"HTTP {response.status}: {await response.text()}")
                         
-        except Exception as e:
-            logger.error(f"Error getting Open Interest for {symbol}: {e}", exc_info=True)
-            return {
-                "symbol": symbol,
-                "category": category,
-                "open_interest": 0.0,
-                "change_24h_pct": 0.0,
-                "trend": "unknown",
-                "interpretation": f"Ошибка получения Open Interest: {str(e)}",
-                "timestamp": datetime.now().isoformat()
-            }
+            except (aiohttp.ClientError, socket.gaierror, OSError) as e:
+                error_msg = str(e).lower()
+                # Проверяем на DNS ошибки
+                if any(keyword in error_msg for keyword in ["dns", "could not contact dns", "name resolution", "gaierror"]):
+                    logger.warning(f"DNS error on attempt {attempt + 1}/{max_retries}: {e}")
+                    if attempt < max_retries - 1:
+                        await asyncio.sleep(retry_delay * (2 ** attempt))
+                        continue
+                    else:
+                        logger.error(f"DNS resolution failed after {max_retries} attempts: {e}")
+                        return {
+                            "symbol": symbol,
+                            "category": category,
+                            "open_interest": 0.0,
+                            "change_24h_pct": 0.0,
+                            "trend": "unknown",
+                            "interpretation": f"DNS/Network Error: Failed to connect to Bybit API after {max_retries} attempts. Error: {e}",
+                            "timestamp": datetime.now().isoformat()
+                        }
+                else:
+                    # Другие сетевые ошибки
+                    logger.warning(f"Network error on attempt {attempt + 1}/{max_retries}: {e}")
+                    if attempt < max_retries - 1:
+                        await asyncio.sleep(retry_delay * (2 ** attempt))
+                        continue
+                    else:
+                        raise
+            except Exception as e:
+                logger.error(f"Error getting Open Interest for {symbol}: {e}", exc_info=True)
+                return {
+                    "symbol": symbol,
+                    "category": category,
+                    "open_interest": 0.0,
+                    "change_24h_pct": 0.0,
+                    "trend": "unknown",
+                    "interpretation": f"Ошибка получения Open Interest: {str(e)}",
+                    "timestamp": datetime.now().isoformat()
+                }
     
     async def close_position(self, symbol: str, reason: str = "Manual close") -> Dict[str, Any]:
         """
@@ -1035,4 +1237,10 @@ class BybitClient:
     async def close(self):
         """Закрыть соединение"""
         await self.exchange.close()
+        
+        # Закрываем HTTP сессию если она была создана
+        if self._http_session and not self._http_session.closed:
+            await self._http_session.close()
+            self._http_session = None
+        
         logger.info("Bybit client closed")

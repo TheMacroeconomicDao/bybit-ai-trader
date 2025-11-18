@@ -41,6 +41,8 @@
 
 **ВАЖНО:** 
 - `scan_market` УЖЕ возвращает `analysis`, `score`, `probability`, `entry_plan`
+- Score автоматически рассчитан по **10-факторной матрице** (Trend, BTC, Pattern, Volume, R:R, S/R, etc.)
+- НЕ нужно пересчитывать Score вручную! Смотри `score_breakdown` для деталей.
 - НЕ нужно делать `analyze_asset` повторно для этих результатов!
 - Используем `limit=15-20` вместо 100, чтобы не перегружать контекст
 
@@ -124,9 +126,10 @@
        → get_support_resistance() // только для финальных кандидатов
        → get_market_structure() // только если критично
 
-3.2. Confluence Scoring:
-     - Используем данные из analysis (уже есть)
-     - Применяем чеклист из zero_risk_methodology
+3.2. Review Score & Confluence:
+     - Score уже рассчитан по матрице (см. score_breakdown)
+     - Убеждаемся что score >= 8.0
+     - Проверяем чеклист из zero_risk_methodology для финального подтверждения
      - Minimum 8.0/10 для рекомендации
 ```
 

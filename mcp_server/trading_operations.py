@@ -315,13 +315,15 @@ class TradingOperations:
         
         Для POST запросов с JSON body (use_json_body=True):
         - Используем сырой JSON body: timestamp + api_key + recv_window + json_string
+        - Ключи JSON должны быть отсортированы для консистентности
         
         Для GET запросов (use_json_body=False):
         - Формат: timestamp + api_key + recv_window + query_string
         """
         if use_json_body:
-            # Для POST: используем JSON строку напрямую
-            json_body = json.dumps(params, separators=(',', ':'))  # Без пробелов
+            # Для POST: используем JSON строку напрямую с сортировкой ключей
+            # ВАЖНО: sort_keys=True для консистентности подписи
+            json_body = json.dumps(params, separators=(',', ':'), sort_keys=True)  # Без пробелов, отсортированные ключи
             sign_string = f"{timestamp}{self.api_key}{recv_window}{json_body}"
         else:
             # Для GET: формат key=value&key2=value2
@@ -361,8 +363,17 @@ class TradingOperations:
                 else:
                     params[k] = str(v)
         
-        # Генерируем подпись используя JSON body
-        signature = self._generate_signature(params, timestamp, recv_window, use_json_body=True)
+        # КРИТИЧНО: Создаем JSON строку с сортировкой ключей для подписи
+        # Используем ту же строку и для отправки, чтобы подпись совпадала
+        json_body = json.dumps(params, separators=(',', ':'), sort_keys=True)
+        
+        # Генерируем подпись используя ту же JSON строку, что и для отправки
+        sign_string = f"{timestamp}{self.api_key}{recv_window}{json_body}"
+        signature = hmac.new(
+            self.api_secret.encode('utf-8'),
+            sign_string.encode('utf-8'),
+            hashlib.sha256
+        ).hexdigest()
         
         # Заголовки для Bybit API v5
         headers = {
@@ -389,15 +400,20 @@ class TradingOperations:
         # Увеличиваем количество повторных попыток для SSL
         session.mount('https://', requests.adapters.HTTPAdapter(max_retries=2))
         
+        # Инициализируем response как None для проверки после цикла
+        response = None
+        
         for attempt in range(max_retries):
             try:
                 logger.info(f"Attempt {attempt + 1}/{max_retries} to {url}")
                 logger.debug(f"Request params: {json.dumps(params, indent=2)}")
                 
-                # Используем session.post для лучшего контроля
+                # КРИТИЧНО: Используем data= вместо json= чтобы отправить точно такой же JSON body,
+                # который использовался для подписи (с сортировкой ключей)
+                # Это гарантирует, что подпись будет валидной
                 response = session.post(
                     url, 
-                    json=params, 
+                    data=json_body,  # Используем предварительно созданную JSON строку
                     headers=headers, 
                     timeout=timeout,
                     verify=True  # Проверяем SSL сертификат
@@ -407,39 +423,68 @@ class TradingOperations:
                 break  # Успешно, выходим из цикла
             except requests.exceptions.SSLError as ssl_err:
                 logger.error(f"SSL error on attempt {attempt + 1}: {ssl_err}")
+                response = None  # Сбрасываем response при ошибке
                 if attempt < max_retries - 1:
                     wait_time = (attempt + 1) * 3
                     logger.warning(f"Retrying SSL connection in {wait_time}s...")
                     time.sleep(wait_time)
-                    # Обновляем timestamp и подпись
+                    # Обновляем timestamp и подпись (используем тот же json_body)
                     timestamp = int(time.time() * 1000)
                     headers["X-BAPI-TIMESTAMP"] = str(timestamp)
-                    signature = self._generate_signature(params, timestamp, recv_window, use_json_body=True)
+                    sign_string = f"{timestamp}{self.api_key}{recv_window}{json_body}"
+                    signature = hmac.new(
+                        self.api_secret.encode('utf-8'),
+                        sign_string.encode('utf-8'),
+                        hashlib.sha256
+                    ).hexdigest()
                     headers["X-BAPI-SIGN"] = signature
                 else:
                     raise Exception(f"SSL connection failed after {max_retries} attempts: {str(ssl_err)}")
             except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as e:
+                response = None  # Сбрасываем response при ошибке
                 if attempt < max_retries - 1:
                     wait_time = (attempt + 1) * 2  # Экспоненциальная задержка: 2, 4, 6 секунд
                     logger.warning(f"Request failed (attempt {attempt + 1}/{max_retries}): {e}. Retrying in {wait_time}s...")
                     time.sleep(wait_time)
-                    # Обновляем timestamp и подпись для нового запроса
+                    # Обновляем timestamp и подпись для нового запроса (используем тот же json_body)
                     timestamp = int(time.time() * 1000)
                     headers["X-BAPI-TIMESTAMP"] = str(timestamp)
-                    signature = self._generate_signature(params, timestamp, recv_window, use_json_body=True)
+                    sign_string = f"{timestamp}{self.api_key}{recv_window}{json_body}"
+                    signature = hmac.new(
+                        self.api_secret.encode('utf-8'),
+                        sign_string.encode('utf-8'),
+                        hashlib.sha256
+                    ).hexdigest()
                     headers["X-BAPI-SIGN"] = signature
                 else:
                     raise Exception(f"HTTP request failed after {max_retries} attempts: {str(e)}")
+            except requests.exceptions.HTTPError as http_err:
+                # HTTP ошибки (4xx, 5xx) - сохраняем response для анализа
+                logger.error(f"HTTP error on attempt {attempt + 1}: {http_err}")
+                if response is None:
+                    raise Exception(f"HTTP error: {str(http_err)}")
+                # Продолжаем обработку ответа даже при HTTP ошибке, чтобы получить детали от API
+                break
         
-        # Закрываем сессию после успешного запроса
+        # Закрываем сессию после запроса
         try:
             session.close()
         except:
             pass
         
+        # КРИТИЧНО: Проверяем что response не None перед обработкой
+        if response is None:
+            logger.error("Response is None after all retry attempts")
+            raise Exception("Failed to get response from Bybit API after all retry attempts. Response is None.")
+        
         # Обрабатываем успешный ответ с безопасным парсингом
         try:
             # Безопасный парсинг JSON ответа
+            # Проверяем что response имеет атрибут text
+            if not hasattr(response, 'text'):
+                logger.error(f"Response object does not have 'text' attribute. Type: {type(response)}")
+                raise Exception(f"Unexpected response type: {type(response)}. Expected requests.Response object.")
+            
             response_text = response.text
             logger.debug(f"Raw HTTP response text: {response_text[:500]}")  # Логируем первые 500 символов
             
@@ -497,8 +542,17 @@ class TradingOperations:
             if v is not None:
                 params[k] = str(v)
         
-        # Генерируем подпись используя JSON body
-        signature = self._generate_signature(params, timestamp, recv_window, use_json_body=True)
+        # КРИТИЧНО: Создаем JSON строку с сортировкой ключей для подписи
+        # Используем ту же строку и для отправки, чтобы подпись совпадала
+        json_body = json.dumps(params, separators=(',', ':'), sort_keys=True)
+        
+        # Генерируем подпись используя ту же JSON строку, что и для отправки
+        sign_string = f"{timestamp}{self.api_key}{recv_window}{json_body}"
+        signature = hmac.new(
+            self.api_secret.encode('utf-8'),
+            sign_string.encode('utf-8'),
+            hashlib.sha256
+        ).hexdigest()
         
         # Заголовки для Bybit API v5
         headers = {
@@ -518,17 +572,30 @@ class TradingOperations:
         timeout = (15, 30)  # 15 сек на подключение, 30 сек на чтение
         
         try:
+            # КРИТИЧНО: Используем data= вместо json= чтобы отправить точно такой же JSON body,
+            # который использовался для подписи (с сортировкой ключей)
             response = session.post(
                 url, 
-                json=params, 
+                data=json_body,  # Используем предварительно созданную JSON строку
                 headers=headers, 
                 timeout=timeout,
                 verify=True
             )
+            
+            # КРИТИЧНО: Проверяем что response не None
+            if response is None:
+                logger.error("Leverage HTTP request returned None")
+                raise Exception("Failed to set leverage: API returned None response")
+            
             response.raise_for_status()
             
             # Безопасный парсинг JSON ответа
             try:
+                # Проверяем что response имеет атрибут text
+                if not hasattr(response, 'text'):
+                    logger.error(f"Leverage response object does not have 'text' attribute. Type: {type(response)}")
+                    raise Exception(f"Unexpected leverage response type: {type(response)}. Expected requests.Response object.")
+                
                 response_text = response.text
                 logger.debug(f"Raw leverage response text: {response_text[:500]}")
                 
@@ -851,6 +918,12 @@ class TradingOperations:
             logger.info(f"Using direct HTTP request for {category} order (more reliable than Pybit)")
             try:
                 response = self._place_order_direct_http(order_params)
+                
+                # КРИТИЧНО: Проверяем что response не None
+                if response is None:
+                    logger.error("_place_order_direct_http returned None")
+                    raise Exception("Failed to place order: API returned None response")
+                
                 logger.info("Direct HTTP request successful")
             except Exception as http_error:
                 logger.error(f"Direct HTTP request failed: {http_error}")
@@ -873,6 +946,12 @@ class TradingOperations:
                             pybit_params["price"] = order_params.get("price")
                         logger.info(f"Pybit params: {pybit_params}")
                         response = self.session.place_order(**pybit_params)
+                        
+                        # Проверяем что response не None
+                        if response is None:
+                            logger.error("Pybit fallback returned None")
+                            raise Exception("Pybit fallback returned None response")
+                        
                         logger.info("Pybit fallback successful")
                     except Exception as pybit_error:
                         logger.error(f"Pybit fallback also failed: {pybit_error}")
@@ -890,6 +969,12 @@ class TradingOperations:
                             if order_params.get("price"):
                                 order_params_no_cat["price"] = order_params.get("price")
                             response = self.session.place_order(**order_params_no_cat)
+                            
+                            # Проверяем что response не None
+                            if response is None:
+                                logger.error("Pybit fallback (no category) returned None")
+                                raise Exception("Pybit fallback (no category) returned None response")
+                            
                             logger.info("Pybit fallback (no category) successful")
                         except Exception as pybit_error2:
                             logger.error(f"Pybit fallback (no category) also failed: {pybit_error2}")
@@ -906,6 +991,11 @@ class TradingOperations:
                             "category": category
                         }
                     raise Exception(f"Failed to place {category} order via direct HTTP: {error_str}")
+            
+            # КРИТИЧНО: Проверяем что response не None перед нормализацией
+            if response is None:
+                logger.error("Response is None before normalization")
+                raise Exception("Failed to place order: response is None after all attempts")
             
             # Безопасная проверка и нормализация ответа
             # Pybit может возвращать ответ в разных форматах
@@ -1978,7 +2068,18 @@ class TradingOperations:
             # Генерация подписи
             timestamp = int(time.time() * 1000)
             recv_window = 5000
-            signature = self._generate_signature(params, timestamp, recv_window, use_json_body=True)
+            
+            # КРИТИЧНО: Создаем JSON строку с сортировкой ключей для подписи
+            # Используем ту же строку и для отправки, чтобы подпись совпадала
+            json_body = json.dumps(params, separators=(',', ':'), sort_keys=True)
+            
+            # Генерируем подпись используя ту же JSON строку, что и для отправки
+            sign_string = f"{timestamp}{self.api_key}{recv_window}{json_body}"
+            signature = hmac.new(
+                self.api_secret.encode('utf-8'),
+                sign_string.encode('utf-8'),
+                hashlib.sha256
+            ).hexdigest()
             
             # Заголовки
             headers = {
@@ -1994,8 +2095,9 @@ class TradingOperations:
             url = f"{self.base_url}/v5/asset/transfer/inter-transfer"
             
             # Выполняем запрос
+            # КРИТИЧНО: Используем data= вместо json= чтобы отправить точно такой же JSON body
             async with aiohttp.ClientSession() as session:
-                async with session.post(url, json=params, headers=headers) as response:
+                async with session.post(url, data=json_body.encode('utf-8'), headers=headers) as response:
                     response_data = await response.json()
                     
                     ret_code = response_data.get("retCode")

@@ -259,3 +259,4 @@ kubectl get jobs -n trader-agent
 **Версия:** OpenRouter Integration  
 **Статус:** ✅ ГОТОВО К ДЕПЛОЮ
 
+

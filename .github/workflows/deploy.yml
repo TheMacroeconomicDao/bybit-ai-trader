@@ -100,3 +100,4 @@ jobs:
         echo "📦 Recent Jobs:"
         kubectl get jobs -n trader-agent --sort-by=.metadata.creationTimestamp | tail -5
 
+

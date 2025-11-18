@@ -314,3 +314,4 @@ if __name__ == "__main__":
     print("\nПример 2: Несколько сигналов")
     asyncio.run(example_multiple_signals())
 
+

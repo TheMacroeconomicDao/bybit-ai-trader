@@ -7,7 +7,10 @@ from typing import Dict, List, Any
 from datetime import datetime, timedelta
 from loguru import logger
 
-from mcp_server.signal_tracker import SignalTracker
+try:
+    from .signal_tracker import SignalTracker
+except ImportError:
+    from signal_tracker import SignalTracker
 
 
 class QualityMetrics:
@@ -499,4 +502,5 @@ class QualityMetrics:
             suggestions.append("Недостаточно данных для конкретных рекомендаций. Продолжайте собирать статистику.")
         
         return suggestions
+
 

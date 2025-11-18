@@ -210,3 +210,4 @@ Bybit API error: params error: IntervalTime Is Required
 
 **Все исправления внесены и готовы к использованию после перезапуска MCP сервера!**
 
+

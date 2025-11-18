@@ -179,3 +179,4 @@ Cannot connect to host api.bybit.com:443 ssl:default [Could not contact DNS serv
 
 Когда сеть восстановится, все 20 функций должны работать без ошибок.
 
+

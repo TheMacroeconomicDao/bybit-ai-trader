@@ -25,3 +25,4 @@ ENV PYTHONDONTWRITEBYTECODE=1
 # Точка входа для автономного агента
 CMD ["python", "-m", "autonomous_agent.main"]
 
+

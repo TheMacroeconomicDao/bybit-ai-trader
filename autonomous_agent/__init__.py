@@ -5,3 +5,4 @@ Autonomous Trading Agent с Qwen AI
 
 __version__ = "1.0.0"
 
+

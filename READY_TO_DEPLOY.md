@@ -190,3 +190,4 @@ kubectl logs -n trader-agent -l job-name=trader-agent-test-* -f
 
 **🎉 ВСЁ ГОТОВО! МОЖНО ДЕПЛОИТЬ! 🚀**
 
+

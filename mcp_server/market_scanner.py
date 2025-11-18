@@ -39,6 +39,15 @@ class MarketScanner:
         """
         logger.info(f"Scanning market with criteria: {criteria}")
         
+        # 1. Get BTC Analysis first
+        try:
+            btc_analysis = await self.ta.analyze_asset("BTC/USDT", timeframes=["1h", "4h"])
+            btc_trend = btc_analysis.get('timeframes', {}).get('4h', {}).get('trend', {}).get('direction', 'neutral')
+        except Exception as e:
+            logger.warning(f"Failed to analyze BTC: {e}")
+            btc_trend = "neutral"
+            btc_analysis = {}
+        
         # Получаем все тикеры
         all_tickers = await self.client.get_all_tickers(
             market_type=criteria.get('market_type', 'spot')
@@ -90,7 +99,8 @@ class MarketScanner:
                         return None
                     
                     # Scoring
-                    score = self._calculate_opportunity_score(analysis, ticker)
+                    score_data = self._calculate_opportunity_score(analysis, ticker, btc_trend)
+                    score = score_data["total"]
                     
                     # Entry plan
                     entry_plan = self._generate_entry_plan(analysis, ticker)
@@ -101,6 +111,7 @@ class MarketScanner:
                         "change_24h": ticker['change_24h'],
                         "volume_24h": ticker['volume_24h'],
                         "score": score,
+                        "score_breakdown": score_data["breakdown"],
                         "probability": self._estimate_probability(score, analysis),
                         "entry_plan": entry_plan,
                         "analysis": analysis,
@@ -247,48 +258,137 @@ class MarketScanner:
         
         return True
     
-    def _calculate_opportunity_score(self, analysis: Dict, ticker: Dict) -> float:
-        """Расчёт scoring возможности (0-10) для ЛЮБОГО направления"""
-        
-        score = 5.0  # Базовый score
+    def _calculate_opportunity_score(self, analysis: Dict, ticker: Dict, btc_trend: str = "neutral") -> Dict[str, Any]:
+        """
+        Расчёт scoring возможности (0-10) на основе 10-факторной матрицы.
+        Returns: {"total": float, "breakdown": Dict}
+        """
+        score = 0.0
+        breakdown = {}
         
         composite = analysis.get('composite_signal', {})
         signal = composite.get('signal', 'HOLD')
         
-        # Определяем направление по сигналу
-        is_long_signal = signal in ['STRONG_BUY', 'BUY']
-        is_short_signal = signal in ['STRONG_SELL', 'SELL']
+        is_long = signal in ['STRONG_BUY', 'BUY']
+        is_short = signal in ['STRONG_SELL', 'SELL']
         
-        # Composite signal strength (для обоих направлений)
-        if signal == 'STRONG_BUY':
-            score += 2.5
-        elif signal == 'BUY':
-            score += 1.5
-        elif signal == 'STRONG_SELL':
-            score += 2.5  # Для шортов STRONG_SELL это хорошо!
-        elif signal == 'SELL':
-            score += 1.5  # Для шортов SELL это хорошо!
-        
-        # Confidence
-        confidence = composite.get('confidence', 0.5)
-        score += (confidence - 0.5) * 3  # -1.5 to +1.5
-        
-        # Alignment (для обоих направлений)
+        if not is_long and not is_short:
+            buy_signals = composite.get('buy_signals', 0)
+            sell_signals = composite.get('sell_signals', 0)
+            is_long = buy_signals > sell_signals
+            is_short = sell_signals > buy_signals
+            
+        # 1. Trend Alignment (0-2.0)
+        # Multi-timeframe alignment
         alignment = composite.get('alignment', 0.5)
-        if alignment > 0.75:
-            score += 1.5
-        elif alignment > 0.6:
-            score += 0.5
+        trend_score = 0.0
+        if alignment >= 0.8: trend_score = 2.0
+        elif alignment >= 0.6: trend_score = 1.0
+        elif alignment >= 0.5: trend_score = 0.5
         
-        # Volume (относительно среднего)
-        h4_data = analysis['timeframes'].get('4h', {})
-        volume_ratio = h4_data.get('indicators', {}).get('volume', {}).get('volume_ratio', 1.0)
-        if volume_ratio > 1.5:
-            score += 1.0
-        elif volume_ratio > 1.2:
-            score += 0.5
+        # Проверяем тренд 4H
+        h4_trend = analysis.get('timeframes', {}).get('4h', {}).get('trend', {}).get('direction', 'neutral')
+        if is_long and h4_trend == 'uptrend': trend_score += 0.5
+        if is_short and h4_trend == 'downtrend': trend_score += 0.5
         
-        return max(0, min(10, score))
+        breakdown['trend'] = min(2.0, trend_score)
+        score += breakdown['trend']
+        
+        # 2. Indicators (0-2.0)
+        # Based on composite score (-10 to +10) normalized or confidence
+        indicator_score = 0.0
+        comp_score = abs(composite.get('score', 0))
+        if comp_score >= 7: indicator_score = 2.0
+        elif comp_score >= 5: indicator_score = 1.5
+        elif comp_score >= 3: indicator_score = 1.0
+        else: indicator_score = 0.5
+        
+        breakdown['indicators'] = indicator_score
+        score += indicator_score
+        
+        # 3. Volume (0-1.0)
+        h4_data = analysis.get('timeframes', {}).get('4h', {})
+        vol_ratio = h4_data.get('indicators', {}).get('volume', {}).get('volume_ratio', 1.0)
+        vol_score = 0.0
+        if vol_ratio >= 2.0: vol_score = 1.0
+        elif vol_ratio >= 1.5: vol_score = 0.8
+        elif vol_ratio >= 1.2: vol_score = 0.5
+        
+        breakdown['volume'] = vol_score
+        score += vol_score
+        
+        # 4. Pattern (0-1.0)
+        pattern_score = 0.0
+        patterns = analysis.get('timeframes', {}).get('4h', {}).get('patterns', {}).get('candlestick', [])
+        if patterns:
+            # Check if pattern matches direction
+            valid_pattern = False
+            for p in patterns:
+                if is_long and p['type'] == 'bullish': valid_pattern = True
+                if is_short and p['type'] == 'bearish': valid_pattern = True
+            
+            if valid_pattern: pattern_score = 1.0
+        
+        breakdown['pattern'] = pattern_score
+        score += pattern_score
+        
+        # 5. R:R (0-1.0)
+        # Assuming standard setup is 1:2 which is good.
+        rr_score = 1.0
+        breakdown['risk_reward'] = rr_score
+        score += rr_score
+        
+        # 6. BTC Support (0-1.0) - NEW
+        btc_score = 0.0
+        if is_long:
+            if btc_trend == 'uptrend': btc_score = 1.0
+            elif btc_trend == 'sideways': btc_score = 0.5
+            elif btc_trend == 'downtrend': btc_score = 0.0 # Penalty!
+        elif is_short:
+            if btc_trend == 'downtrend': btc_score = 1.0
+            elif btc_trend == 'sideways': btc_score = 0.5
+            elif btc_trend == 'uptrend': btc_score = 0.0
+        else:
+            btc_score = 0.5
+            
+        breakdown['btc_support'] = btc_score
+        score += btc_score
+        
+        # 7. S/R Level (0-1.0) - NEW
+        sr_score = 0.5 # Default
+        current_price = ticker['price']
+        levels = h4_data.get('levels', {})
+        
+        if is_long:
+            supports = levels.get('support', [])
+            if supports:
+                # Find closest support below price
+                closest = max([s for s in supports if s < current_price], default=0)
+                if closest > 0:
+                    dist_pct = (current_price - closest) / current_price
+                    if dist_pct < 0.05: sr_score = 1.0 # Close to support
+                    elif dist_pct < 0.1: sr_score = 0.8
+        elif is_short:
+            resistances = levels.get('resistance', [])
+            if resistances:
+                closest = min([r for r in resistances if r > current_price], default=float('inf'))
+                if closest != float('inf'):
+                    dist_pct = (closest - current_price) / current_price
+                    if dist_pct < 0.05: sr_score = 1.0
+                    elif dist_pct < 0.1: sr_score = 0.8
+                    
+        breakdown['sr_level'] = sr_score
+        score += sr_score
+        
+        # 8. Trend Strength (ADX) (0-1.0)
+        adx = h4_data.get('indicators', {}).get('adx', {}).get('adx', 0)
+        adx_score = 0.0
+        if adx > 25: adx_score = 1.0
+        elif adx > 20: adx_score = 0.5
+        breakdown['trend_strength'] = adx_score
+        score += adx_score
+        
+        return {"total": min(10.0, score), "breakdown": breakdown}
     
     def _estimate_probability(self, score: float, analysis: Dict) -> float:
         """Оценка вероятности успеха"""
@@ -303,7 +403,7 @@ class MarketScanner:
         return round(min(0.95, max(0.3, adjusted_prob)), 2)
     
     def _generate_entry_plan(self, analysis: Dict, ticker: Dict) -> Dict[str, Any]:
-        """Генерация плана входа (для LONG или SHORT)"""
+        """Генерация плана входа (для LONG или SHORT) с Hard-coded риск-менеджментом"""
         
         current_price = ticker['price']
         h4_indicators = analysis['timeframes'].get('4h', {}).get('indicators', {})
@@ -335,17 +435,37 @@ class MarketScanner:
             take_profit = current_price + (atr * 4)
             side = "long"
         
-        risk = abs(current_price - stop_loss)
-        reward = abs(take_profit - current_price)
-        risk_reward = reward / risk if risk > 0 else 0
+        risk_per_share = abs(current_price - stop_loss)
+        reward_per_share = abs(take_profit - current_price)
+        risk_reward = reward_per_share / risk_per_share if risk_per_share > 0 else 0
+        
+        # HARD-CODED RISK MANAGEMENT
+        ACCOUNT_BALANCE = 30.0
+        MAX_RISK_PCT = 0.02
+        risk_usd = ACCOUNT_BALANCE * MAX_RISK_PCT # $0.60
+        
+        # Рассчитываем размер позиции
+        if risk_per_share > 0:
+            qty = risk_usd / risk_per_share
+        else:
+            qty = 0
+            
+        # Округляем количество (примерно, зависит от актива, но пока float)
+        qty = round(qty, 6)
+        position_value = qty * current_price
         
         return {
             "side": side,
-            "entry_price": round(current_price, 2),
-            "stop_loss": round(stop_loss, 2),
-            "take_profit": round(take_profit, 2),
+            "entry_price": round(current_price, 4),
+            "stop_loss": round(stop_loss, 4),
+            "take_profit": round(take_profit, 4),
             "risk_reward": round(risk_reward, 2),
-            "position_size_calc": "Use position sizing calculator with your risk %"
+            "recommended_size": qty,
+            "recommended_value_usd": round(position_value, 2),
+            "risk_usd": round(risk_usd, 2),
+            "max_risk_allowed": round(risk_usd, 2),
+            "leverage_hint": "Use 1x-3x max",
+            "position_size_calc": f"Risk ${risk_usd:.2f} / Stop Dist {risk_per_share:.4f} = {qty} units"
         }
     
     def _generate_reasoning(self, analysis: Dict, score: float) -> str:

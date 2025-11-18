@@ -210,3 +210,4 @@ breakeven_price = entry_price + tick_size
 **Тестовые активы:** ETHUSDT (spot и futures)  
 **Минимальные суммы:** $15 (spot), 0.01 ETH (~$30) (futures)
 
+

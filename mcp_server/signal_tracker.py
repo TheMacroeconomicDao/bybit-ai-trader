@@ -64,9 +64,16 @@ class SignalTracker:
                 time_to_result INTEGER,
                 timeframe TEXT,
                 pattern_type TEXT,
-                pattern_name TEXT
+                pattern_name TEXT,
+                telegram_message_ids TEXT
             )
         """)
+        
+        # Добавляем колонку telegram_message_ids если её нет (для существующих БД)
+        try:
+            cursor.execute("ALTER TABLE signals ADD COLUMN telegram_message_ids TEXT")
+        except sqlite3.OperationalError:
+            pass  # Колонка уже существует
         
         # Таблица price_snapshots
         cursor.execute("""
@@ -165,12 +172,12 @@ class SignalTracker:
             INSERT INTO signals (
                 signal_id, symbol, side, entry_price, stop_loss, take_profit,
                 risk_reward, confluence_score, probability, expected_value,
-                analysis_data, timeframe, pattern_type, pattern_name
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                analysis_data, timeframe, pattern_type, pattern_name, telegram_message_ids
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             signal_id, symbol, side.lower(), entry_price, stop_loss, take_profit,
             risk_reward, confluence_score, probability, expected_value,
-            analysis_json, timeframe, pattern_type, pattern_name
+            analysis_json, timeframe, pattern_type, pattern_name, None
         ))
         
         self.conn.commit()
@@ -490,6 +497,52 @@ class SignalTracker:
             ))
         
         self.conn.commit()
+    
+    async def set_telegram_message_ids(
+        self,
+        signal_id: str,
+        message_ids: Dict[str, int]
+    ):
+        """
+        Сохранить message_id для Telegram постов сигнала
+        
+        Args:
+            signal_id: ID сигнала
+            message_ids: Словарь {chat_id: message_id}
+        """
+        cursor = self.conn.cursor()
+        message_ids_json = json.dumps(message_ids)
+        
+        cursor.execute("""
+            UPDATE signals
+            SET telegram_message_ids = ?
+            WHERE signal_id = ?
+        """, (message_ids_json, signal_id))
+        
+        self.conn.commit()
+        logger.debug(f"Telegram message IDs saved for signal {signal_id}")
+    
+    async def get_telegram_message_ids(self, signal_id: str) -> Dict[str, int]:
+        """
+        Получить message_id для Telegram постов сигнала
+        
+        Args:
+            signal_id: ID сигнала
+            
+        Returns:
+            Словарь {chat_id: message_id} или пустой словарь
+        """
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT telegram_message_ids FROM signals WHERE signal_id = ?", (signal_id,))
+        row = cursor.fetchone()
+        
+        if row and row["telegram_message_ids"]:
+            try:
+                return json.loads(row["telegram_message_ids"])
+            except:
+                return {}
+        
+        return {}
     
     def close(self):
         """Закрыть соединение с БД"""

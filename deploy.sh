@@ -101,3 +101,4 @@ echo "   Логи: kubectl logs -n $NAMESPACE -l app=trader-agent -f"
 echo "   Ручной запуск: kubectl create job --from=cronjob/trader-agent-analyzer trader-agent-test-\$(date +%s) -n $NAMESPACE"
 echo ""
 
+

@@ -146,6 +146,60 @@ class TelegramBot:
         except aiohttp.ClientError as e:
             logger.error(f"❌ Ошибка сети: {e}")
             raise
+    
+    async def edit_message(
+        self,
+        chat_id: str,
+        message_id: int,
+        text: str,
+        parse_mode: Optional[str] = None,
+        disable_web_page_preview: bool = True
+    ) -> dict:
+        """
+        Редактировать существующее сообщение в чате/группе
+        
+        Args:
+            chat_id: ID чата или группы
+            message_id: ID сообщения для редактирования
+            text: Новый текст сообщения
+            parse_mode: Режим парсинга (Markdown, HTML, None)
+            disable_web_page_preview: Отключить превью ссылок
+        
+        Returns:
+            dict: Ответ от Telegram API
+        """
+        session = await self._get_session()
+        
+        url = f"{self.base_url}/editMessageText"
+        
+        payload = {
+            "chat_id": str(chat_id),
+            "message_id": int(message_id),
+            "text": text,
+            "disable_web_page_preview": disable_web_page_preview
+        }
+        
+        if parse_mode:
+            payload["parse_mode"] = parse_mode
+        
+        try:
+            async with session.post(url, json=payload) as response:
+                result = await response.json()
+                
+                if response.status == 200 and result.get("ok"):
+                    logger.info(f"✅ Сообщение {message_id} успешно обновлено в чате {chat_id}")
+                    return result
+                else:
+                    error_msg = result.get("description", "Unknown error")
+                    logger.error(f"❌ Ошибка редактирования сообщения: {error_msg}")
+                    raise Exception(f"Telegram API error: {error_msg}")
+                    
+        except aiohttp.ClientError as e:
+            logger.error(f"❌ Ошибка сети при редактировании сообщения: {e}")
+            raise
+        except Exception as e:
+            logger.error(f"❌ Неожиданная ошибка при редактировании: {e}")
+            raise
 
 
 async def send_trading_signal(

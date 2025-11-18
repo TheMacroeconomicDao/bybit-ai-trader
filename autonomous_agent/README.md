@@ -221,3 +221,4 @@ spec:
 
 Часть проекта TRADER-AGENT
 
+

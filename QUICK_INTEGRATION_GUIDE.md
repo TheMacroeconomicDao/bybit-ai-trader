@@ -104,3 +104,4 @@ await bot.send_message("-1003382613825", "<b>Текст</b>", parse_mode="HTML")
 
 См. `TELEGRAM_BOT_INTEGRATION.md` для детальной информации.
 
+

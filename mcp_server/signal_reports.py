@@ -9,8 +9,12 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from loguru import logger
 
-from mcp_server.signal_tracker import SignalTracker
-from mcp_server.quality_metrics import QualityMetrics
+try:
+    from .signal_tracker import SignalTracker
+    from .quality_metrics import QualityMetrics
+except ImportError:
+    from signal_tracker import SignalTracker
+    from quality_metrics import QualityMetrics
 
 
 class SignalReports:
@@ -456,4 +460,5 @@ class SignalReports:
         logger.info(f"Data exported to CSV: {output_path}")
         
         return output_path
+
 
