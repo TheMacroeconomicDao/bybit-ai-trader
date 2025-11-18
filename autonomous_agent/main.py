@@ -50,7 +50,7 @@ def load_config() -> dict:
     return config
 
 
-async def publish_to_telegram(bot_token: str, chat_ids_str: str, message: str):
+async def publish_to_telegram(bot_token: str, chat_ids_str: str, message: str, parse_mode: str = None):
     """Публикует сообщение в Telegram каналы"""
     chat_ids = [cid.strip() for cid in chat_ids_str.split(",") if cid.strip()]
     
@@ -64,11 +64,13 @@ async def publish_to_telegram(bot_token: str, chat_ids_str: str, message: str):
         results = []
         for chat_id in chat_ids:
             try:
-                await bot.send_message(
-                    chat_id=chat_id,
-                    text=message,
-                    parse_mode="HTML"
-                )
+                send_params = {
+                    "chat_id": chat_id,
+                    "text": message
+                }
+                if parse_mode:
+                    send_params["parse_mode"] = parse_mode
+                await bot.send_message(**send_params)
                 logger.info(f"Message sent to Telegram channel {chat_id}")
                 results.append({"chat_id": chat_id, "success": True})
             except Exception as e:
@@ -146,7 +148,8 @@ async def main():
             
             if telegram_token and telegram_chat_ids:
                 try:
-                    await publish_to_telegram(telegram_token, telegram_chat_ids, telegram_message)
+                    # Отправляем без HTML режима, так как используем специальные символы
+                await publish_to_telegram(telegram_token, telegram_chat_ids, telegram_message, parse_mode=None)
                 except Exception as e:
                     logger.error(f"Failed to publish to Telegram: {e}")
             else:

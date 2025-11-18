@@ -1749,8 +1749,52 @@ class TradingOperations:
             if category not in ["spot", "linear", "inverse"]:
                 raise ValueError(f"Category must be 'spot', 'linear', or 'inverse'. Got: {category}")
             
-            # Добавляем небольшой buffer для fees
-            breakeven_price = entry_price * 1.001  # +0.1% для комиссий
+            # Получаем информацию о позиции для определения стороны
+            positions_resp = self.session.get_positions(category=category, symbol=symbol)
+            if positions_resp.get("retCode") == 0:
+                positions_list = positions_resp.get("result", {}).get("list", [])
+                open_positions = [p for p in positions_list if float(p.get("size", 0)) != 0]
+                
+                if open_positions:
+                    position = open_positions[0]
+                    position_size = float(position.get("size", 0))
+                    
+                    # Получаем tick_size для правильного округления
+                    instrument_info = self.session.get_instruments_info(category=category, symbol=symbol)
+                    tick_size = 0.01  # Default
+                    if instrument_info.get("retCode") == 0:
+                        instrument_list = instrument_info.get("result", {}).get("list", [])
+                        if instrument_list:
+                            price_filter = instrument_list[0].get("priceFilter", {})
+                            tick_size = float(price_filter.get("tickSize", "0.01"))
+                    
+                    # Определяем сторону позиции
+                    if position_size > 0:
+                        # LONG позиция: SL должен быть ниже цены входа
+                        breakeven_price = entry_price - tick_size
+                        logger.info(f"LONG position: breakeven SL = {entry_price} - {tick_size} = {breakeven_price}")
+                    else:
+                        # SHORT позиция: SL должен быть выше цены входа
+                        breakeven_price = entry_price + tick_size
+                        logger.info(f"SHORT position: breakeven SL = {entry_price} + {tick_size} = {breakeven_price}")
+                else:
+                    # Если позиция не найдена, используем консервативный подход
+                    # Для LONG: ниже цены входа
+                    instrument_info = self.session.get_instruments_info(category=category, symbol=symbol)
+                    tick_size = 0.01
+                    if instrument_info.get("retCode") == 0:
+                        instrument_list = instrument_info.get("result", {}).get("list", [])
+                        if instrument_list:
+                            price_filter = instrument_list[0].get("priceFilter", {})
+                            tick_size = float(price_filter.get("tickSize", "0.01"))
+                    
+                    # По умолчанию предполагаем LONG (можно улучшить, передавая side как параметр)
+                    breakeven_price = entry_price - tick_size
+                    logger.warning(f"Position not found, assuming LONG: breakeven SL = {entry_price} - {tick_size} = {breakeven_price}")
+            else:
+                # Fallback: используем минимальный tick
+                breakeven_price = entry_price - 0.01
+                logger.warning(f"Could not get position info, using fallback: breakeven SL = {breakeven_price}")
             
             return await self.modify_position(
                 symbol=symbol,
