@@ -142,6 +142,10 @@ class AutonomousAnalyzer:
             logger.info("Step 3: Scanning market for opportunities...")
             opportunities = await self._scan_all_opportunities()
             
+            # Получаем общее количество активов для статистики
+            all_tickers = await self.bybit_client.get_all_tickers("spot")
+            total_assets_scanned = len(all_tickers) if all_tickers else 0
+            
             # ШАГ 4: Детальный анализ топ кандидатов
             logger.info("Step 4: Deep analysis of top candidates...")
             top_candidates = await self._deep_analyze_top_candidates(opportunities)
@@ -167,6 +171,10 @@ class AutonomousAnalyzer:
                 qwen_analysis
             )
             
+            # Разделяем все возможности на лонги и шорты для статистики
+            all_longs = [opp for opp in top_candidates if opp.get("entry_plan", {}).get("side", "long") == "long"]
+            all_shorts = [opp for opp in top_candidates if opp.get("entry_plan", {}).get("side", "long") == "short"]
+            
             return {
                 "success": True,
                 "timestamp": datetime.now().isoformat(),
@@ -174,9 +182,14 @@ class AutonomousAnalyzer:
                 "btc_analysis": btc_analysis,
                 "top_3_longs": top_longs,
                 "top_3_shorts": top_shorts,
+                "all_longs": all_longs[:10],  # Топ 10 для статистики
+                "all_shorts": all_shorts[:10],  # Топ 10 для статистики
                 "qwen_analysis": qwen_analysis,
-                "total_scanned": len(opportunities),
-                "total_analyzed": len(top_candidates)
+                "total_scanned": total_assets_scanned,
+                "total_analyzed": len(top_candidates),
+                "potential_candidates": len(opportunities),
+                "longs_found": len(all_longs),
+                "shorts_found": len(all_shorts)
             }
         
         except Exception as e:
@@ -233,23 +246,36 @@ class AutonomousAnalyzer:
         """Параллельное сканирование всех возможностей"""
         all_opportunities = []
         
-        # Параллельный запуск всех типов сканирования
+        # Параллельный запуск всех типов сканирования с увеличенными лимитами
         tasks = [
-            # Разные критерии для scan_market
+            # Разные критерии для scan_market - увеличенные лимиты для полного охвата
             self.market_scanner.scan_market({
                 "market_type": "spot",
                 "min_volume_24h": 1000000,
                 "indicators": {"rsi_range": [0, 35]}  # Oversold
-            }, limit=20),
+            }, limit=100),  # Увеличено с 20 до 100
+            
+            self.market_scanner.scan_market({
+                "market_type": "spot",
+                "min_volume_24h": 1000000,
+                "indicators": {"rsi_range": [65, 100]}  # Overbought для шортов
+            }, limit=100),
             
             self.market_scanner.scan_market({
                 "market_type": "spot",
                 "min_volume_24h": 1000000,
                 "indicators": {"macd_crossover": "bullish"}
-            }, limit=20),
+            }, limit=100),
+            
+            self.market_scanner.scan_market({
+                "market_type": "spot",
+                "min_volume_24h": 1000000,
+                "indicators": {"macd_crossover": "bearish"}
+            }, limit=100),
             
             # Специализированные поиски
             self.market_scanner.find_oversold_assets("spot", min_volume_24h=1000000),
+            self.market_scanner.find_overbought_assets("spot", min_volume_24h=1000000),
             self.market_scanner.find_breakout_opportunities("spot", min_volume_24h=1000000),
             self.market_scanner.find_trend_reversals("spot", min_volume_24h=1000000)
         ]

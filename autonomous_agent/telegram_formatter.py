@@ -6,6 +6,7 @@ Telegram Formatter
 from typing import Dict, List, Any
 from datetime import datetime
 from loguru import logger
+from autonomous_agent.detailed_formatter import DetailedFormatter
 
 
 class TelegramFormatter:
@@ -27,45 +28,11 @@ class TelegramFormatter:
         
         top_longs = analysis_result.get("top_3_longs", [])
         top_shorts = analysis_result.get("top_3_shorts", [])
+        all_longs = analysis_result.get("all_longs", [])
+        all_shorts = analysis_result.get("all_shorts", [])
         
-        if not top_longs and not top_shorts:
-            return "⚠️ Качественных возможностей не найдено. Рекомендуется подождать лучших setup."
-        
-        # Заголовок
-        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        message = f"🎯 АНАЛИЗ РЫНКА\n📅 {timestamp}\n\n"
-        
-        # BTC статус
-        btc_status = analysis_result.get("btc_analysis", {}).get("status", "unknown")
-        btc_emoji = "🟢" if btc_status == "bullish" else "🔴" if btc_status == "bearish" else "🟡"
-        message += f"{btc_emoji} BTC Status: {btc_status.upper()}\n\n"
-        
-        # ТОП 3 ЛОНГА
-        if top_longs:
-            message += "🟢 ТОП 3 ЛОНГА\n"
-            message += "=" * 50 + "\n\n"
-            for idx, opp in enumerate(top_longs, 1):
-                message += TelegramFormatter._format_single_opportunity(opp, idx)
-                message += "\n" + "─" * 40 + "\n\n"
-        
-        # ТОП 3 ШОРТА
-        if top_shorts:
-            message += "🔴 ТОП 3 ШОРТА\n"
-            message += "=" * 50 + "\n\n"
-            for idx, opp in enumerate(top_shorts, 1):
-                message += TelegramFormatter._format_single_opportunity(opp, idx)
-                message += "\n" + "─" * 40 + "\n\n"
-        
-        # Market summary
-        market_overview = analysis_result.get("market_overview", {})
-        sentiment = market_overview.get("sentiment", "neutral")
-        message += f"📊 Market Sentiment: {sentiment.upper()}\n"
-        
-        # Статистика
-        message += f"📈 Проанализировано активов: {analysis_result.get('total_scanned', 0)}\n"
-        message += f"✅ Детально проанализировано: {analysis_result.get('total_analyzed', 0)}\n"
-        
-        return message
+        # Используем детальный форматтер для полного отчёта
+        return DetailedFormatter.format_full_report(analysis_result)
     
     @staticmethod
     def _format_single_opportunity(opp: Dict[str, Any], index: int) -> str:

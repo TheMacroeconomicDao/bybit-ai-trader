@@ -652,6 +652,62 @@ class TradingOperations:
             if leverage and (leverage < 1 or leverage > 125):
                 raise ValueError(f"Leverage must be between 1 and 125. Got: {leverage}")
             
+            # Получаем информацию об инструменте для правильного округления количества
+            # Это критично для избежания ошибок "Order quantity has too many decimals"
+            try:
+                instrument_info = self.session.get_instruments_info(
+                    category=category,
+                    symbol=symbol
+                )
+                
+                if instrument_info.get("retCode") == 0:
+                    instrument_list = instrument_info.get("result", {}).get("list", [])
+                    if instrument_list:
+                        instrument = instrument_list[0]
+                        lot_size = instrument.get("lotSizeFilter", {})
+                        base_precision = float(lot_size.get("basePrecision", "0.000001"))
+                        
+                        # Округляем количество до basePrecision
+                        import math
+                        quantity_rounded = math.floor(quantity / base_precision) * base_precision
+                        
+                        # Форматируем без научной нотации
+                        precision_digits = len(str(base_precision).split('.')[-1])
+                        quantity_str = f"{quantity_rounded:.{precision_digits}f}".rstrip('0').rstrip('.')
+                        
+                        # Проверяем минимальные требования
+                        min_order_qty = float(lot_size.get("minOrderQty", 0))
+                        min_order_amt = float(lot_size.get("minOrderAmt", 5))
+                        
+                        # Если количество меньше минимального, используем минимальное
+                        if quantity_rounded < min_order_qty:
+                            quantity_rounded = min_order_qty
+                            quantity_str = f"{quantity_rounded:.{precision_digits}f}".rstrip('0').rstrip('.')
+                            logger.warning(f"Quantity adjusted to minOrderQty: {quantity_str}")
+                        
+                        # Если сумма меньше минимальной, предупреждаем
+                        if price:
+                            actual_amount = quantity_rounded * price
+                        else:
+                            # Для market ордеров используем текущую цену
+                            ticker = self.session.get_tickers(category=category, symbol=symbol)
+                            if ticker.get("retCode") == 0:
+                                ticker_data = ticker.get("result", {}).get("list", [{}])[0]
+                                current_price = float(ticker_data.get("lastPrice", 0))
+                                actual_amount = quantity_rounded * current_price
+                            else:
+                                actual_amount = quantity_rounded * 100000  # Fallback для BTC
+                        
+                        if actual_amount < min_order_amt:
+                            logger.warning(f"Order amount (${actual_amount:.2f}) is below minOrderAmt (${min_order_amt:.2f})")
+                        
+                        quantity = quantity_rounded
+                        logger.info(f"Quantity rounded to {quantity_str} (basePrecision: {base_precision})")
+                else:
+                    logger.warning(f"Could not get instrument info, using original quantity")
+            except Exception as e:
+                logger.warning(f"Error getting instrument info for rounding: {e}. Using original quantity.")
+            
             # Параметры ордера
             # ВАЖНО: Для фьючерсов Pybit может требовать другие параметры
             order_params = {
@@ -661,6 +717,36 @@ class TradingOperations:
                 "orderType": order_type,
                 "qty": str(quantity)
             }
+            
+            # Для Limit ордеров добавляем цену
+            if order_type == "Limit" and price:
+                # Округляем цену до tickSize
+                try:
+                    instrument_info = self.session.get_instruments_info(category=category, symbol=symbol)
+                    if instrument_info.get("retCode") == 0:
+                        instrument_list = instrument_info.get("result", {}).get("list", [])
+                        if instrument_list:
+                            instrument = instrument_list[0]
+                            price_filter = instrument.get("priceFilter", {})
+                            tick_size = float(price_filter.get("tickSize", "0.1"))
+                            
+                            # Округляем цену до tickSize
+                            import math
+                            price_rounded = math.floor(price / tick_size) * tick_size
+                            
+                            # Форматируем правильно
+                            tick_digits = len(str(tick_size).split('.')[-1])
+                            price_str = f"{price_rounded:.{tick_digits}f}".rstrip('0').rstrip('.')
+                            
+                            order_params["price"] = price_str
+                            logger.info(f"Price rounded to {price_str} (tickSize: {tick_size})")
+                        else:
+                            order_params["price"] = str(price)
+                    else:
+                        order_params["price"] = str(price)
+                except Exception as e:
+                    logger.warning(f"Error rounding price: {e}. Using original price.")
+                    order_params["price"] = str(price)
             
             # Для spot ордеров добавляем timeInForce
             if category == "spot":
@@ -690,9 +776,8 @@ class TradingOperations:
                 if take_profit:
                     order_params["takeProfit"] = str(take_profit)
             
-            # Добавляем цену для Limit
-            if order_type == "Limit" and price:
-                order_params["price"] = str(price)
+            # Цена уже добавлена выше с правильным округлением для Limit ордеров
+            # Не добавляем повторно, чтобы не перезаписать округленную цену
             
             # Устанавливаем leverage перед открытием позиции
             # Для фьючерсов используем прямой HTTP запрос
@@ -769,17 +854,46 @@ class TradingOperations:
                 logger.info("Direct HTTP request successful")
             except Exception as http_error:
                 logger.error(f"Direct HTTP request failed: {http_error}")
-                # Fallback: пробуем через Pybit только для spot
+                # Fallback: пробуем через Pybit для spot
                 if category == "spot":
                     logger.info("Trying Pybit as fallback for spot order")
                     try:
-                        # Убираем category из параметров для Pybit (spot по умолчанию)
-                        order_params_no_cat = {k: v for k, v in order_params.items() if k != "category"}
-                        response = self.session.place_order(**order_params_no_cat)
+                        # Для UTA используем category="spot" явно
+                        # Пробуем разные варианты параметров
+                        pybit_params = {
+                            "category": "spot",
+                            "symbol": order_params.get("symbol"),
+                            "side": order_params.get("side"),
+                            "orderType": order_params.get("orderType"),
+                            "qty": order_params.get("qty"),
+                            "timeInForce": order_params.get("timeInForce", "IOC")
+                        }
+                        # Добавляем цену если это Limit ордер
+                        if order_params.get("price"):
+                            pybit_params["price"] = order_params.get("price")
+                        logger.info(f"Pybit params: {pybit_params}")
+                        response = self.session.place_order(**pybit_params)
                         logger.info("Pybit fallback successful")
                     except Exception as pybit_error:
                         logger.error(f"Pybit fallback also failed: {pybit_error}")
-                        raise Exception(f"Failed to place order via both direct HTTP and Pybit: {str(http_error)}")
+                        # Пробуем без category для старых версий Pybit
+                        try:
+                            logger.info("Trying Pybit without category parameter")
+                            order_params_no_cat = {
+                                "symbol": order_params.get("symbol"),
+                                "side": order_params.get("side"),
+                                "orderType": order_params.get("orderType"),
+                                "qty": order_params.get("qty"),
+                                "timeInForce": order_params.get("timeInForce", "IOC")
+                            }
+                            # Добавляем цену если это Limit ордер
+                            if order_params.get("price"):
+                                order_params_no_cat["price"] = order_params.get("price")
+                            response = self.session.place_order(**order_params_no_cat)
+                            logger.info("Pybit fallback (no category) successful")
+                        except Exception as pybit_error2:
+                            logger.error(f"Pybit fallback (no category) also failed: {pybit_error2}")
+                            raise Exception(f"Failed to place order via both direct HTTP and Pybit: {str(http_error)}")
                 else:
                     # Улучшенная обработка ошибки подписи API
                     error_str = str(http_error)
