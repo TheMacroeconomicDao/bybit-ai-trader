@@ -18,7 +18,7 @@ spec:
           restartPolicy: OnFailure
           containers:
           - name: trader-agent
-            image: ghcr.io/themacroeconomicdao/trader-agent:main
+            image: ghcr.io/themacroeconomicdao/bybit-ai-trader:main
             imagePullPolicy: Always
             env:
             # Секреты из Secret
