@@ -32,6 +32,10 @@ from technical_analysis import TechnicalAnalysis
 from market_scanner import MarketScanner
 from position_monitor import PositionMonitor
 from bybit_client import BybitClient
+from signal_tracker import SignalTracker
+from signal_price_monitor import SignalPriceMonitor
+from quality_metrics import QualityMetrics
+from signal_reports import SignalReports
 
 
 # Настройка логирования
@@ -57,6 +61,10 @@ technical_analysis: Optional[TechnicalAnalysis] = None
 market_scanner: Optional[MarketScanner] = None
 position_monitor: Optional[PositionMonitor] = None
 bybit_client: Optional[BybitClient] = None
+signal_tracker: Optional[SignalTracker] = None
+signal_monitor: Optional[SignalPriceMonitor] = None
+quality_metrics: Optional[QualityMetrics] = None
+signal_reports: Optional[SignalReports] = None
 
 
 def load_credentials() -> Dict[str, Any]:
@@ -253,7 +261,21 @@ async def list_tools() -> List[Tool]:
                         "type": "object",
                         "description": "Критерии фильтрации"
                     },
-                    "limit": {"type": "integer", "default": 10}
+                    "limit": {
+                        "type": "integer",
+                        "default": 10,
+                        "description": "Максимальное количество результатов"
+                    },
+                    "auto_track": {
+                        "type": "boolean",
+                        "default": False,
+                        "description": "Автоматически записывать топ-N сигналов в tracker"
+                    },
+                    "track_limit": {
+                        "type": "integer",
+                        "default": 3,
+                        "description": "Количество топ сигналов для записи (если auto_track=True)"
+                    }
                 },
                 "required": ["criteria"]
             }
@@ -540,6 +562,78 @@ async def list_tools() -> List[Tool]:
                 "required": ["from_account_type", "to_account_type", "coin", "amount"]
             }
         ),
+        
+        # ═══════════════════════════════════════
+        # 📊 КОНТРОЛЬ КАЧЕСТВА СИГНАЛОВ
+        # ═══════════════════════════════════════
+        
+        Tool(
+            name="track_signal",
+            description="Записать новый сигнал для отслеживания качества",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "symbol": {"type": "string", "description": "Торговая пара (например BTC/USDT)"},
+                    "side": {"type": "string", "enum": ["long", "short"], "description": "Направление сделки"},
+                    "entry_price": {"type": "number", "description": "Цена входа"},
+                    "stop_loss": {"type": "number", "description": "Стоп-лосс"},
+                    "take_profit": {"type": "number", "description": "Тейк-профит"},
+                    "confluence_score": {"type": "number", "description": "Confluence score (0-12)"},
+                    "probability": {"type": "number", "description": "Вероятность успеха (0-1)"},
+                    "expected_value": {"type": "number", "description": "Expected Value (опционально)"},
+                    "analysis_data": {"type": "object", "description": "Полные данные анализа (опционально)"},
+                    "timeframe": {"type": "string", "description": "Основной таймфрейм сигнала (опционально)"},
+                    "pattern_type": {"type": "string", "description": "Тип паттерна (опционально)"},
+                    "pattern_name": {"type": "string", "description": "Название паттерна (опционально)"}
+                },
+                "required": ["symbol", "side", "entry_price", "stop_loss", "take_profit", "confluence_score", "probability"]
+            }
+        ),
+        
+        Tool(
+            name="get_signal_quality_metrics",
+            description="Получить метрики качества сигналов",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "days": {"type": "integer", "default": 30, "description": "Количество дней для анализа"},
+                    "include_patterns": {"type": "boolean", "default": True, "description": "Включить анализ паттернов"}
+                }
+            }
+        ),
+        
+        Tool(
+            name="get_signal_performance_report",
+            description="Получить детальный отчет о производительности сигналов",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "days": {"type": "integer", "default": 30, "description": "Количество дней для анализа"},
+                    "format": {"type": "string", "enum": ["json", "summary"], "default": "summary", "description": "Формат отчета"}
+                }
+            }
+        ),
+        
+        Tool(
+            name="get_active_signals",
+            description="Получить список всех активных сигналов",
+            inputSchema={
+                "type": "object",
+                "properties": {}
+            }
+        ),
+        
+        Tool(
+            name="get_signal_details",
+            description="Получить детальную информацию о сигнале",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "signal_id": {"type": "string", "description": "ID сигнала"}
+                },
+                "required": ["signal_id"]
+            }
+        ),
     ]
 
 
@@ -629,7 +723,10 @@ async def call_tool(name: str, arguments: Any) -> List[TextContent]:
         elif name == "scan_market":
             result = await market_scanner.scan_market(
                 criteria=arguments["criteria"],
-                limit=arguments.get("limit", 10)
+                limit=arguments.get("limit", 10),
+                auto_track=arguments.get("auto_track", False),
+                signal_tracker=signal_tracker if arguments.get("auto_track", False) else None,
+                track_limit=arguments.get("track_limit", 3)
             )
         
         elif name == "find_oversold_assets":
@@ -674,7 +771,8 @@ async def call_tool(name: str, arguments: Any) -> List[TextContent]:
                 entry_price=float(entry_price),
                 stop_loss=float(arguments["stop_loss"]),
                 take_profit=float(arguments["take_profit"]),
-                risk_pct=arguments.get("risk_pct", 0.01)
+                risk_pct=arguments.get("risk_pct", 0.01),
+                signal_tracker=signal_tracker  # Автоматически записывает при is_valid=True
             )
         
         # ═══ Account ═══
@@ -1115,6 +1213,148 @@ async def call_tool(name: str, arguments: Any) -> List[TextContent]:
                     "error": str(e)
                 }
         
+        # ═══ Signal Quality Control ═══
+        elif name == "track_signal":
+            try:
+                if not signal_tracker:
+                    result = {
+                        "success": False,
+                        "error": "Signal tracker not initialized"
+                    }
+                else:
+                    signal_id = await signal_tracker.record_signal(
+                        symbol=arguments["symbol"],
+                        side=arguments["side"],
+                        entry_price=float(arguments["entry_price"]),
+                        stop_loss=float(arguments["stop_loss"]),
+                        take_profit=float(arguments["take_profit"]),
+                        confluence_score=float(arguments["confluence_score"]),
+                        probability=float(arguments["probability"]),
+                        expected_value=arguments.get("expected_value"),
+                        analysis_data=arguments.get("analysis_data"),
+                        timeframe=arguments.get("timeframe"),
+                        pattern_type=arguments.get("pattern_type"),
+                        pattern_name=arguments.get("pattern_name")
+                    )
+                    result = {
+                        "success": True,
+                        "signal_id": signal_id,
+                        "message": "Signal tracked successfully"
+                    }
+            except Exception as e:
+                logger.error(f"Error in track_signal: {e}", exc_info=True)
+                result = {
+                    "success": False,
+                    "error": str(e)
+                }
+        
+        elif name == "get_signal_quality_metrics":
+            try:
+                if not quality_metrics:
+                    result = {
+                        "success": False,
+                        "error": "Quality metrics not initialized"
+                    }
+                else:
+                    days = arguments.get("days", 30)
+                    include_patterns = arguments.get("include_patterns", True)
+                    
+                    metrics = await quality_metrics.calculate_overall_metrics(days=days)
+                    
+                    result = {
+                        "success": True,
+                        "metrics": metrics
+                    }
+                    
+                    if include_patterns:
+                        pattern_perf = await quality_metrics.analyze_pattern_performance()
+                        result["pattern_performance"] = pattern_perf
+                        
+                        tf_perf = await quality_metrics.analyze_timeframe_performance()
+                        result["timeframe_performance"] = tf_perf
+            except Exception as e:
+                logger.error(f"Error in get_signal_quality_metrics: {e}", exc_info=True)
+                result = {
+                    "success": False,
+                    "error": str(e)
+                }
+        
+        elif name == "get_signal_performance_report":
+            try:
+                if not signal_reports:
+                    result = {
+                        "success": False,
+                        "error": "Signal reports not initialized"
+                    }
+                else:
+                    days = arguments.get("days", 30)
+                    format_type = arguments.get("format", "summary")
+                    
+                    report = await signal_reports.generate_summary_report(days=days, format=format_type)
+                    result = {
+                        "success": True,
+                        "report": report
+                    }
+            except Exception as e:
+                logger.error(f"Error in get_signal_performance_report: {e}", exc_info=True)
+                result = {
+                    "success": False,
+                    "error": str(e)
+                }
+        
+        elif name == "get_active_signals":
+            try:
+                if not signal_tracker:
+                    result = {
+                        "success": False,
+                        "error": "Signal tracker not initialized"
+                    }
+                else:
+                    active_signals = await signal_tracker.get_active_signals()
+                    result = {
+                        "success": True,
+                        "active_signals": active_signals,
+                        "count": len(active_signals)
+                    }
+            except Exception as e:
+                logger.error(f"Error in get_active_signals: {e}", exc_info=True)
+                result = {
+                    "success": False,
+                    "error": str(e)
+                }
+        
+        elif name == "get_signal_details":
+            try:
+                if not signal_tracker:
+                    result = {
+                        "success": False,
+                        "error": "Signal tracker not initialized"
+                    }
+                else:
+                    signal_id = arguments["signal_id"]
+                    signal = await signal_tracker.get_signal(signal_id)
+                    
+                    if signal:
+                        # Получаем snapshots если есть
+                        snapshots = await signal_tracker.get_price_snapshots(signal_id, limit=100)
+                        result = {
+                            "success": True,
+                            "signal": signal,
+                            "price_snapshots": snapshots,
+                            "snapshots_count": len(snapshots)
+                        }
+                    else:
+                        result = {
+                            "success": False,
+                            "error": f"Signal {signal_id} not found"
+                        }
+            except Exception as e:
+                logger.error(f"Error in get_signal_details: {e}", exc_info=True)
+                result = {
+                    "success": False,
+                    "error": str(e)
+                }
+        
         else:
             raise ValueError(f"Unknown tool: {name}")
         
@@ -1147,6 +1387,7 @@ async def call_tool(name: str, arguments: Any) -> List[TextContent]:
 async def main():
     """Запуск полного trading сервера"""
     global trading_ops, technical_analysis, market_scanner, position_monitor, bybit_client
+    global signal_tracker, signal_monitor, quality_metrics, signal_reports
     
     logger.info("=" * 50)
     logger.info("Starting Complete Bybit Trading MCP Server")
@@ -1180,10 +1421,21 @@ async def main():
         testnet=bybit_creds.get("testnet", False)
     )
     
+    # Инициализация системы контроля качества сигналов
+    logger.info("Initializing Signal Quality Control System...")
+    signal_tracker = SignalTracker()
+    signal_monitor = SignalPriceMonitor(signal_tracker, bybit_client, check_interval=300)  # 5 минут
+    quality_metrics = QualityMetrics(signal_tracker)
+    signal_reports = SignalReports(signal_tracker, quality_metrics)
+    
+    # Запуск автоматического мониторинга сигналов в фоне
+    asyncio.create_task(signal_monitor.start_monitoring())
+    logger.info("✅ Signal monitoring started (background task)")
+    
     logger.info("✅ All components initialized")
     logger.info("=" * 50)
     logger.info("Server ready for connections")
-    logger.info("Available tools: 30")
+    logger.info("Available tools: 35")
     logger.info("=" * 50)
     logger.info("Tools breakdown:")
     logger.info("  - Market Data: 3")
@@ -1194,13 +1446,20 @@ async def main():
     logger.info("  - Trading Operations: 5")
     logger.info("  - Monitoring: 2")
     logger.info("  - Auto-Actions: 2")
-    logger.info("Total: 30 tools")
+    logger.info("  - Signal Quality Control: 5")
+    logger.info("Total: 35 tools")
     logger.info("=" * 50)
     logger.info("Phase 1 Improvements:")
     logger.info("  ✅ Open Interest Analysis added (get_open_interest)")
     logger.info("  ✅ Funding Rate integration improved in validate_entry")
     logger.info("  ✅ Market scanner optimized (10 parallel, 100 candidates)")
     logger.info("  ✅ Fibonacci Retracements added to indicators")
+    logger.info("=" * 50)
+    logger.info("Signal Quality Control System:")
+    logger.info("  ✅ Signal tracking database initialized")
+    logger.info("  ✅ Automatic price monitoring active")
+    logger.info("  ✅ Quality metrics calculator ready")
+    logger.info("  ✅ Report generator ready")
     logger.info("=" * 50)
     
     # Запуск MCP server

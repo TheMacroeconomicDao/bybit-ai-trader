@@ -19,6 +19,14 @@ from mcp_server.technical_analysis import TechnicalAnalysis
 from mcp_server.market_scanner import MarketScanner
 from autonomous_agent.qwen_client import QwenClient
 
+# Опциональный импорт для signal tracking
+try:
+    from mcp_server.signal_tracker import SignalTracker
+    SIGNAL_TRACKING_AVAILABLE = True
+except ImportError:
+    SIGNAL_TRACKING_AVAILABLE = False
+    SignalTracker = None
+
 
 class AutonomousAnalyzer:
     """Автономный анализатор рынка с Qwen AI"""
@@ -29,7 +37,8 @@ class AutonomousAnalyzer:
         bybit_api_key: str,
         bybit_api_secret: str,
         qwen_model: str = "qwen/qwen-turbo",  # OpenRouter формат
-        testnet: bool = False
+        testnet: bool = False,
+        signal_tracker: Optional[SignalTracker] = None
     ):
         """
         Инициализация автономного анализатора
@@ -40,6 +49,7 @@ class AutonomousAnalyzer:
             bybit_api_secret: API секрет Bybit
             qwen_model: Модель Qwen для использования
             testnet: Использовать testnet для Bybit
+            signal_tracker: Опциональный SignalTracker для записи сигналов
         """
         # Инициализация Qwen клиента
         self.qwen = QwenClient(qwen_api_key, qwen_model)
@@ -48,6 +58,11 @@ class AutonomousAnalyzer:
         self.bybit_client = BybitClient(bybit_api_key, bybit_api_secret, testnet)
         self.technical_analysis = TechnicalAnalysis(self.bybit_client)
         self.market_scanner = MarketScanner(self.bybit_client, self.technical_analysis)
+        
+        # Signal tracker для контроля качества
+        self.signal_tracker = signal_tracker
+        if self.signal_tracker:
+            logger.info("Signal tracking enabled")
         
         # Загружаем системные инструкции
         self.system_instructions = self._load_system_instructions()
@@ -170,6 +185,31 @@ class AutonomousAnalyzer:
                 top_candidates,
                 qwen_analysis
             )
+            
+            # ШАГ 7: Запись сигналов для отслеживания качества (если tracker доступен)
+            if self.signal_tracker:
+                logger.info("Step 7: Recording signals for quality tracking...")
+                tracked_signals = []
+                
+                # Записываем топ-3 лонги
+                for long_signal in top_longs:
+                    try:
+                        signal_id = await self._record_signal_to_tracker(long_signal, "long")
+                        if signal_id:
+                            tracked_signals.append(signal_id)
+                    except Exception as e:
+                        logger.warning(f"Failed to track long signal {long_signal.get('symbol', 'unknown')}: {e}")
+                
+                # Записываем топ-3 шорты
+                for short_signal in top_shorts:
+                    try:
+                        signal_id = await self._record_signal_to_tracker(short_signal, "short")
+                        if signal_id:
+                            tracked_signals.append(signal_id)
+                    except Exception as e:
+                        logger.warning(f"Failed to track short signal {short_signal.get('symbol', 'unknown')}: {e}")
+                
+                logger.info(f"Recorded {len(tracked_signals)} signals for quality tracking")
             
             # Разделяем все возможности на лонги и шорты для статистики
             all_longs = [opp for opp in top_candidates if opp.get("entry_plan", {}).get("side", "long") == "long"]
@@ -494,6 +534,82 @@ class AutonomousAnalyzer:
                     factors.append(f"{tf} RSI overbought ({rsi:.1f})")
         
         return factors[:5]  # Максимум 5 факторов
+    
+    async def _record_signal_to_tracker(self, signal: Dict[str, Any], side: str) -> Optional[str]:
+        """
+        Записать сигнал в tracker для отслеживания качества
+        
+        Args:
+            signal: Данные сигнала
+            side: Направление ('long' или 'short')
+            
+        Returns:
+            signal_id или None если запись не удалась
+        """
+        if not self.signal_tracker:
+            return None
+        
+        try:
+            # Извлекаем необходимые данные
+            symbol = signal.get("symbol", "")
+            entry_price = signal.get("entry_price", 0)
+            stop_loss = signal.get("stop_loss", 0)
+            take_profit = signal.get("take_profit", 0)
+            confluence_score = signal.get("confluence_score", 0)
+            probability = signal.get("probability", 0)
+            
+            # Проверяем что все необходимые данные есть
+            if not all([symbol, entry_price, stop_loss, take_profit, confluence_score, probability]):
+                logger.warning(f"Incomplete signal data for {symbol}, skipping tracking")
+                return None
+            
+            # Извлекаем дополнительные данные
+            analysis_data = signal.get("full_analysis") or signal.get("analysis") or signal
+            timeframe = None
+            pattern_type = None
+            pattern_name = None
+            
+            # Пытаемся извлечь timeframe и pattern из analysis_data
+            if isinstance(analysis_data, dict):
+                # Ищем timeframe в timeframes
+                timeframes = analysis_data.get("timeframes", {})
+                if timeframes:
+                    # Берем первый доступный timeframe
+                    timeframe = list(timeframes.keys())[0] if timeframes else None
+                
+                # Ищем паттерны
+                for tf_data in timeframes.values():
+                    patterns = tf_data.get("patterns", {})
+                    if patterns:
+                        # Берем первый найденный паттерн
+                        for ptype, pdata in patterns.items():
+                            if isinstance(pdata, dict) and pdata.get("detected"):
+                                pattern_type = ptype
+                                pattern_name = pdata.get("name") or ptype
+                                break
+                        if pattern_type:
+                            break
+            
+            # Записываем сигнал
+            signal_id = await self.signal_tracker.record_signal(
+                symbol=symbol,
+                side=side,
+                entry_price=float(entry_price),
+                stop_loss=float(stop_loss),
+                take_profit=float(take_profit),
+                confluence_score=float(confluence_score),
+                probability=float(probability),
+                analysis_data=analysis_data,
+                timeframe=timeframe,
+                pattern_type=pattern_type,
+                pattern_name=pattern_name
+            )
+            
+            return signal_id
+            
+        except Exception as e:
+            logger.error(f"Error recording signal to tracker: {e}", exc_info=True)
+            return None
     
     async def close(self):
         """Закрытие соединений"""

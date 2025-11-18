@@ -19,7 +19,10 @@ class MarketScanner:
     async def scan_market(
         self,
         criteria: Dict[str, Any],
-        limit: int = 10
+        limit: int = 10,
+        auto_track: bool = False,
+        signal_tracker: Optional[Any] = None,
+        track_limit: int = 3
     ) -> List[Dict[str, Any]]:
         """
         Универсальное сканирование рынка по критериям
@@ -27,6 +30,9 @@ class MarketScanner:
         Args:
             criteria: Критерии фильтрации
             limit: Максимальное количество результатов
+            auto_track: Автоматически записывать топ-N сигналов в tracker
+            signal_tracker: SignalTracker для записи сигналов (если auto_track=True)
+            track_limit: Количество топ сигналов для записи (по умолчанию 3)
             
         Returns:
             Список активов, соответствующих критериям
@@ -124,9 +130,85 @@ class MarketScanner:
         high_quality = [opp for opp in opportunities if opp['score'] >= 7.0]
         if len(high_quality) >= limit:
             logger.info(f"Found {len(high_quality)} high-quality opportunities, returning top {limit}")
-            return high_quality[:limit]
+            final_opportunities = high_quality[:limit]
+        else:
+            final_opportunities = opportunities[:limit]
         
-        return opportunities[:limit]
+        # Автоматическая запись топ-N сигналов в tracker
+        if auto_track and signal_tracker and final_opportunities:
+            try:
+                tracked_count = 0
+                for opp in final_opportunities[:track_limit]:
+                    # Проверяем что есть entry_plan с необходимыми данными
+                    entry_plan = opp.get('entry_plan', {})
+                    if not entry_plan:
+                        continue
+                    
+                    entry_price = entry_plan.get('entry_price')
+                    stop_loss = entry_plan.get('stop_loss')
+                    take_profit = entry_plan.get('take_profit')
+                    side = entry_plan.get('side', 'long')
+                    
+                    if not all([entry_price, stop_loss, take_profit]):
+                        continue
+                    
+                    # Нормализуем symbol
+                    symbol = opp.get('symbol', '').replace('/', '')
+                    if not symbol:
+                        continue
+                    
+                    # Извлекаем дополнительные данные
+                    analysis = opp.get('analysis', {})
+                    score = opp.get('score', 0)
+                    probability = opp.get('probability', 0.5)
+                    
+                    # Извлекаем timeframe
+                    timeframe = None
+                    if 'timeframes' in analysis:
+                        for tf in ["4h", "1h", "15m"]:
+                            if tf in analysis['timeframes']:
+                                timeframe = tf
+                                break
+                    
+                    # Извлекаем паттерны
+                    pattern_type = None
+                    pattern_name = None
+                    if 'patterns' in analysis:
+                        patterns = analysis['patterns']
+                        if patterns:
+                            first_pattern = patterns[0] if isinstance(patterns, list) else list(patterns.values())[0]
+                            if isinstance(first_pattern, dict):
+                                pattern_type = first_pattern.get('type')
+                                pattern_name = first_pattern.get('name')
+                    
+                    # Записываем сигнал
+                    try:
+                        signal_id = await signal_tracker.record_signal(
+                            symbol=symbol,
+                            side=side.lower(),
+                            entry_price=float(entry_price),
+                            stop_loss=float(stop_loss),
+                            take_profit=float(take_profit),
+                            confluence_score=float(score),
+                            probability=float(probability),
+                            analysis_data=analysis,
+                            timeframe=timeframe,
+                            pattern_type=pattern_type,
+                            pattern_name=pattern_name
+                        )
+                        tracked_count += 1
+                        logger.info(f"✅ Auto-tracked signal from scan_market: {signal_id} for {symbol} {side}")
+                    except Exception as e:
+                        logger.warning(f"Failed to track signal for {symbol}: {e}")
+                        continue
+                
+                if tracked_count > 0:
+                    logger.info(f"✅ Auto-tracked {tracked_count} signals from scan_market")
+            except Exception as e:
+                logger.warning(f"Failed to auto-track signals from scan_market: {e}")
+                # Не прерываем выполнение
+        
+        return final_opportunities
     
     def _check_indicator_criteria(self, analysis: Dict, criteria: Dict) -> bool:
         """Проверка индикаторных критериев"""

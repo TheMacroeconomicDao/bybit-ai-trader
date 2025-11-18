@@ -552,10 +552,20 @@ class TechnicalAnalysis:
         entry_price: float,
         stop_loss: float,
         take_profit: float,
-        risk_pct: float = 0.01
+        risk_pct: float = 0.01,
+        signal_tracker: Optional[Any] = None
     ) -> Dict[str, Any]:
         """
         Валидация точки входа перед открытием позиции
+        
+        Args:
+            symbol: Торговая пара
+            side: Направление ('long' или 'short')
+            entry_price: Цена входа
+            stop_loss: Стоп-лосс
+            take_profit: Тейк-профит
+            risk_pct: Процент риска
+            signal_tracker: Опциональный SignalTracker для автоматической записи сигналов
         
         Returns:
             Детальная оценка качества setup
@@ -621,7 +631,7 @@ class TechnicalAnalysis:
         # Expected Value
         expected_value = (win_probability * reward) - ((1 - win_probability) * risk)
         
-        return {
+        result = {
             "is_valid": is_valid,
             "score": score,
             "confidence": round(composite['confidence'], 2),
@@ -634,6 +644,53 @@ class TechnicalAnalysis:
             "warnings": composite.get('warnings', []) if score < 7 else [],
             "recommendations": self._get_entry_recommendations(score, risk_reward, composite)
         }
+        
+        # Автоматическая запись валидного сигнала в tracker
+        if is_valid and signal_tracker:
+            try:
+                # Извлекаем timeframe из анализа (основной таймфрейм)
+                timeframe = None
+                for tf in ["4h", "1h", "15m"]:
+                    if tf in analysis.get('timeframes', {}):
+                        timeframe = tf
+                        break
+                
+                # Извлекаем паттерны если есть
+                pattern_type = None
+                pattern_name = None
+                if 'patterns' in analysis:
+                    patterns = analysis['patterns']
+                    if patterns:
+                        first_pattern = patterns[0] if isinstance(patterns, list) else list(patterns.values())[0]
+                        if isinstance(first_pattern, dict):
+                            pattern_type = first_pattern.get('type')
+                            pattern_name = first_pattern.get('name')
+                
+                # Нормализуем symbol (убираем / если есть)
+                normalized_symbol = symbol.replace('/', '')
+                
+                signal_id = await signal_tracker.record_signal(
+                    symbol=normalized_symbol,
+                    side=side.lower(),
+                    entry_price=entry_price,
+                    stop_loss=stop_loss,
+                    take_profit=take_profit,
+                    confluence_score=float(score),
+                    probability=win_probability,
+                    expected_value=expected_value,
+                    analysis_data=analysis,
+                    timeframe=timeframe,
+                    pattern_type=pattern_type,
+                    pattern_name=pattern_name
+                )
+                
+                result["signal_id"] = signal_id
+                logger.info(f"✅ Signal automatically tracked: {signal_id} for {symbol} {side}")
+            except Exception as e:
+                logger.warning(f"Failed to auto-track signal: {e}")
+                # Не прерываем выполнение, просто логируем ошибку
+        
+        return result
     
     def _get_entry_recommendations(self, score: int, rr: float, composite: Dict) -> List[str]:
         """Генерация рекомендаций для входа"""

@@ -4,11 +4,17 @@ Publish market analysis signal to Telegram
 import asyncio
 import sys
 import aiohttp
-from typing import Optional
+from typing import Optional, Any
+from pathlib import Path
 
 
-async def publish_market_analysis():
-    """Publish comprehensive market analysis signal with BOTH LONG and SHORT opportunities"""
+async def publish_market_analysis(signal_tracker: Optional[Any] = None):
+    """
+    Publish comprehensive market analysis signal with BOTH LONG and SHORT opportunities
+    
+    Args:
+        signal_tracker: Опциональный SignalTracker для автоматической записи сигналов при публикации
+    """
     
     # Read scan results
     import json
@@ -212,6 +218,60 @@ async def publish_market_analysis():
                 "error": str(e)
             })
             print(f"❌ Failed to send to {chat_id}: {e}")
+    
+    # Автоматическая запись топ-3 сигналов в tracker при успешной публикации
+    if signal_tracker and results["success"] and len(results["sent_to"]) > 0:
+        try:
+            tracked_count = 0
+            # Записываем топ-3 LONG и топ-3 SHORT сигнала
+            signals_to_track = (longs[:3] if longs else []) + (shorts[:3] if shorts else [])
+            
+            for opp in signals_to_track:
+                entry_plan = opp.get('entry_plan', {})
+                if not entry_plan:
+                    continue
+                
+                entry_price = entry_plan.get('entry_price')
+                stop_loss = entry_plan.get('stop_loss')
+                take_profit = entry_plan.get('take_profit')
+                side = entry_plan.get('side', 'long')
+                
+                if not all([entry_price, stop_loss, take_profit]):
+                    continue
+                
+                symbol = opp.get('symbol', '').replace('/', '')
+                if not symbol:
+                    continue
+                
+                score = opp.get('score', 0)
+                probability = opp.get('probability', 0.5)
+                
+                # Записываем сигнал
+                try:
+                    signal_id = await signal_tracker.record_signal(
+                        symbol=symbol,
+                        side=side.lower(),
+                        entry_price=float(entry_price),
+                        stop_loss=float(stop_loss),
+                        take_profit=float(take_profit),
+                        confluence_score=float(score),
+                        probability=float(probability),
+                        analysis_data=None,  # Нет полного анализа в этом контексте
+                        timeframe=None,
+                        pattern_type=None,
+                        pattern_name=None
+                    )
+                    tracked_count += 1
+                    print(f"✅ Auto-tracked signal from Telegram publish: {signal_id} for {symbol} {side}")
+                except Exception as e:
+                    print(f"⚠️ Failed to track signal for {symbol}: {e}")
+                    continue
+            
+            if tracked_count > 0:
+                print(f"✅ Auto-tracked {tracked_count} signals from Telegram publication")
+        except Exception as e:
+            print(f"⚠️ Failed to auto-track signals from Telegram publication: {e}")
+            # Не прерываем выполнение
     
     return results
 
