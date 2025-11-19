@@ -691,6 +691,105 @@ class TechnicalAnalysis:
                 
         # Возвращаем последние 3 OB
         return active_obs[-3:]
+    
+    def _check_hard_stops_for_validation(self, analysis: Dict, is_long: bool, entry_timeframe: str = "5m") -> Dict:
+        """
+        Обязательные проверки которые БЛОКИРУЮТ вход (для validate_entry)
+        
+        Args:
+            analysis: Полный анализ актива
+            is_long: True для LONG, False для SHORT
+            entry_timeframe: Таймфрейм входа
+        
+        Returns:
+            {"blocked": bool, "stops": List[str], "can_proceed": bool, "details": Dict}
+        """
+        stops = []
+        blocked = False
+        details = {}
+        
+        composite = analysis.get('composite_signal', {})
+        
+        # STOP #1: Composite Signal = HOLD с низкой confidence
+        signal = composite.get('signal', 'HOLD')
+        confidence = composite.get('confidence', 0.5)
+        if signal == 'HOLD' and confidence < 0.5:
+            stops.append(f"Composite signal HOLD with low confidence ({confidence:.2f} < 0.5)")
+            blocked = True
+            details['composite_signal'] = {"signal": signal, "confidence": confidence}
+        
+        # STOP #2: Confidence слишком низкая
+        if confidence < 0.4:
+            stops.append(f"Composite confidence too low ({confidence:.2f} < 0.4)")
+            blocked = True
+            details['confidence'] = confidence
+        
+        # STOP #3: MACD bearish на 2+ коротких TF для LONG
+        if is_long:
+            bearish_count = 0
+            macd_details = {}
+            for tf in ['1m', '5m', '15m']:
+                tf_data = analysis.get('timeframes', {}).get(tf, {})
+                macd = tf_data.get('indicators', {}).get('macd', {})
+                crossover = macd.get('crossover', 'neutral')
+                macd_details[tf] = crossover
+                if crossover == 'bearish':
+                    bearish_count += 1
+            
+            if bearish_count >= 2:
+                stops.append(f"MACD bearish on {bearish_count} short timeframes")
+                blocked = True
+                details['macd'] = macd_details
+        
+        # STOP #4: MACD bullish на 2+ коротких TF для SHORT
+        if not is_long:
+            bullish_count = 0
+            macd_details = {}
+            for tf in ['1m', '5m', '15m']:
+                tf_data = analysis.get('timeframes', {}).get(tf, {})
+                macd = tf_data.get('indicators', {}).get('macd', {})
+                crossover = macd.get('crossover', 'neutral')
+                macd_details[tf] = crossover
+                if crossover == 'bullish':
+                    bullish_count += 1
+            
+            if bullish_count >= 2:
+                stops.append(f"MACD bullish on {bullish_count} short timeframes")
+                blocked = True
+                details['macd'] = macd_details
+        
+        # STOP #5: Volume слишком низкий для скальпинга
+        volume_checks = {}
+        for tf in ['1m', '5m', '15m']:
+            tf_data = analysis.get('timeframes', {}).get(tf, {})
+            vol_data = tf_data.get('indicators', {}).get('volume', {})
+            vol_ratio = vol_data.get('volume_ratio', 1.0)
+            volume_checks[tf] = vol_ratio
+        
+        entry_vol = volume_checks.get(entry_timeframe, 1.0)
+        if entry_timeframe in ['1m', '5m'] and entry_vol < 0.5:
+            stops.append(f"Volume too low for scalping on {entry_timeframe}: {entry_vol:.2f}")
+            blocked = True
+            details['volume'] = volume_checks
+        
+        # STOP #6: BB Squeeze без volume confirmation
+        for tf in ['1m', '5m', '15m']:
+            tf_data = analysis.get('timeframes', {}).get(tf, {})
+            bb = tf_data.get('indicators', {}).get('bollinger_bands', {})
+            vol_data = tf_data.get('indicators', {}).get('volume', {})
+            
+            if bb.get('squeeze', False) and vol_data.get('volume_ratio', 1.0) < 0.5:
+                stops.append(f"BB Squeeze on {tf} without volume confirmation (vol_ratio: {vol_data.get('volume_ratio', 0):.2f})")
+                blocked = True
+                details['bb_squeeze'] = {tf: {"squeeze": True, "volume_ratio": vol_data.get('volume_ratio', 0)}}
+                break
+        
+        return {
+            "blocked": blocked,
+            "stops": stops,
+            "can_proceed": not blocked,
+            "details": details
+        }
 
     async def validate_entry(
         self,
@@ -719,8 +818,32 @@ class TechnicalAnalysis:
         """
         logger.info(f"Validating entry: {symbol} {side} @ {entry_price}")
         
-        # Получаем текущий анализ
-        analysis = await self.analyze_asset(symbol, timeframes=["15m", "1h", "4h", "1d"])
+        # Получаем текущий анализ (включая короткие TF для hard stops)
+        analysis = await self.analyze_asset(symbol, timeframes=["1m", "5m", "15m", "1h", "4h", "1d"])
+        
+        is_long = side.lower() == 'long'
+        entry_timeframe = "5m"  # По умолчанию, можно определить из анализа
+        
+        # HARD STOPS: Обязательные проверки ПЕРВЫМИ
+        hard_stops = self._check_hard_stops_for_validation(analysis, is_long, entry_timeframe)
+        if hard_stops.get("blocked", False):
+            return {
+                "is_valid": False,
+                "score": 0,
+                "confidence": 0.0,
+                "blocked": True,
+                "blocking_reasons": hard_stops.get("stops", []),
+                "details": hard_stops.get("details", {}),
+                "checks": {},
+                "probability_analysis": {
+                    "win_probability": 0.0,
+                    "expected_value": 0.0,
+                    "risk_reward_ratio": 0.0
+                },
+                "warnings": hard_stops.get("stops", []),
+                "recommendations": ["Entry BLOCKED by hard stops. " + "; ".join(hard_stops.get("stops", []))],
+                "message": "Entry BLOCKED by hard stops. " + "; ".join(hard_stops.get("stops", []))
+            }
         
         # Расчёт R:R
         risk = abs(entry_price - stop_loss)

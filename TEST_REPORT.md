@@ -169,10 +169,12 @@ Result:
 
 **Команда:**
 ```bash
-export BYBIT_API_KEY="V84NJog5v9bM5k6fRn"
-export BYBIT_API_SECRET="RYZ1JeyGsWhtjigF01rKDYzq3lRbvlxvU89L"
+export BYBIT_API_KEY="your_api_key_here"
+export BYBIT_API_SECRET="your_api_secret_here"
 pnpm test:production
 ```
+
+⚠️ **ВАЖНО**: Используйте реальные ключи из GitHub Secrets или системных переменных!
 
 ### Test 3: Cursor Integration (Pending)
 

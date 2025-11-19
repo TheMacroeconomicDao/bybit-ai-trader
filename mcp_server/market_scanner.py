@@ -49,19 +49,19 @@ class MarketScanner:
             btc_analysis = {}
 
         # 2. Get Account Balance for dynamic risk management
+        # КРИТИЧЕСКИ ВАЖНО: Всегда использовать реальный баланс!
         try:
             account_info = await self.client.get_account_info()
             # Use total equity for risk calculation
             account_balance = float(account_info.get("balance", {}).get("total", 0.0))
             
-            if account_balance <= 0:
-                logger.warning("Account balance is 0 or unavailable, using default $30 for calculation")
-                account_balance = 30.0
-            else:
-                logger.info(f"Using dynamic account balance: ${account_balance:.2f}")
+            if account_balance is None or account_balance <= 0:
+                raise Exception(f"CRITICAL: Invalid account balance: {account_balance}. Cannot proceed with trading!")
+            
+            logger.info(f"✅ Account balance retrieved: ${account_balance:.2f}")
         except Exception as e:
-            logger.warning(f"Failed to get account info: {e}, using default $30")
-            account_balance = 30.0
+            logger.error(f"CRITICAL: Cannot get valid wallet balance: {e}")
+            raise Exception(f"Market scan aborted: Unable to get account balance. Error: {e}")
             
         # 3. Get Open Positions for correlation check
         open_positions_symbols = []
@@ -141,6 +141,7 @@ class MarketScanner:
                         return None
                     
                     # Entry plan (FIRST) - Pass account_balance
+                    # ВАЖНО: Если баланс недоступен, entry_plan будет с предупреждением
                     entry_plan = self._generate_entry_plan(analysis, ticker, account_balance)
                     
                     # Scoring (SECOND) - Pass risk_reward from plan
@@ -300,11 +301,274 @@ class MarketScanner:
         
         return True
     
+    def _check_composite_signal_hard_stop(self, analysis: Dict) -> Dict:
+        """
+        HARD STOP: Проверка composite signal
+        
+        Returns:
+            {"blocked": bool, "reason": str, "score_override": float, "penalty_multiplier": float, "warning": str}
+        """
+        composite = analysis.get('composite_signal', {})
+        signal = composite.get('signal', 'HOLD')
+        confidence = composite.get('confidence', 0.5)
+        
+        # HARD STOP #1: HOLD с низкой confidence
+        if signal == 'HOLD' and confidence < 0.5:
+            return {
+                "blocked": True,
+                "reason": f"Composite signal HOLD with low confidence ({confidence:.2f} < 0.5)",
+                "score_override": 0.0,
+                "penalty_multiplier": 0.0,
+                "warning": None
+            }
+        
+        # HARD STOP #2: Confidence слишком низкая для любого сигнала
+        if confidence < 0.4:
+            return {
+                "blocked": True,
+                "reason": f"Composite confidence too low ({confidence:.2f} < 0.4)",
+                "score_override": 0.0,
+                "penalty_multiplier": 0.0,
+                "warning": None
+            }
+        
+        # PENALTY: HOLD с средней confidence
+        if signal == 'HOLD':
+            return {
+                "blocked": False,
+                "reason": None,
+                "score_override": None,
+                "penalty_multiplier": confidence,  # 0.5 = 50% от score
+                "warning": f"Composite signal HOLD with confidence {confidence:.2f}"
+            }
+        
+        return {
+            "blocked": False,
+            "reason": None,
+            "score_override": None,
+            "penalty_multiplier": 1.0,
+            "warning": None
+        }
+    
+    def _check_scalping_volume(self, analysis: Dict, entry_timeframe: str = "5m") -> Dict:
+        """
+        Проверка volume для скальпинга на коротких таймфреймах
+        
+        Args:
+            analysis: Полный анализ актива
+            entry_timeframe: Таймфрейм входа (1m, 5m, 15m)
+        
+        Returns:
+            {"passed": bool, "reason": str, "volume_ratios": Dict, "score_penalty": float}
+        """
+        volume_checks = {}
+        short_tfs = ['1m', '5m', '15m']
+        
+        # Собираем volume на всех коротких TF
+        for tf in short_tfs:
+            tf_data = analysis.get('timeframes', {}).get(tf, {})
+            vol_data = tf_data.get('indicators', {}).get('volume', {})
+            vol_ratio = vol_data.get('volume_ratio', 1.0)
+            volume_checks[tf] = vol_ratio
+        
+        # HARD STOP #1: Volume слишком низкий на entry timeframe
+        entry_vol = volume_checks.get(entry_timeframe, 1.0)
+        if entry_vol < 0.5:
+            return {
+                "passed": False,
+                "reason": f"Volume too low on {entry_timeframe}: {entry_vol:.2f} (minimum 0.5)",
+                "volume_ratios": volume_checks,
+                "score_penalty": -10.0  # Блокируем
+            }
+        
+        # HARD STOP #2: Volume низкий на критических TF (1m, 5m) для скальпинга
+        if entry_timeframe in ['1m', '5m']:
+            critical_vol = volume_checks.get(entry_timeframe, 1.0)
+            if critical_vol < 0.5:
+                return {
+                    "passed": False,
+                    "reason": f"Volume too low for scalping on {entry_timeframe}: {critical_vol:.2f}",
+                    "volume_ratios": volume_checks,
+                    "score_penalty": -10.0
+                }
+        
+        # PENALTY: Низкий volume на всех коротких TF
+        max_vol = max([volume_checks.get(tf, 0) for tf in short_tfs])
+        if max_vol < 1.0:
+            return {
+                "passed": True,  # Не блокируем, но penalty
+                "reason": f"All short TF have low volume, max: {max_vol:.2f}",
+                "volume_ratios": volume_checks,
+                "score_penalty": -2.0  # Большой penalty
+            }
+        
+        # OK: Volume достаточен
+        return {
+            "passed": True,
+            "reason": "Volume sufficient for scalping",
+            "volume_ratios": volume_checks,
+            "score_penalty": 0.0
+        }
+    
+    def _check_macd_alignment(self, analysis: Dict, is_long: bool, entry_timeframe: str = "5m") -> Dict:
+        """
+        Проверка MACD alignment на коротких таймфреймах
+        
+        Args:
+            analysis: Полный анализ актива
+            is_long: True для LONG, False для SHORT
+            entry_timeframe: Таймфрейм входа
+        
+        Returns:
+            {"aligned": bool, "penalty": float, "bearish_count": int, "bullish_count": int, "details": Dict, "reason": str}
+        """
+        short_tfs = ['1m', '5m', '15m']
+        macd_details = {}
+        bearish_count = 0
+        bullish_count = 0
+        
+        # Проверяем MACD на всех коротких TF
+        for tf in short_tfs:
+            tf_data = analysis.get('timeframes', {}).get(tf, {})
+            macd = tf_data.get('indicators', {}).get('macd', {})
+            crossover = macd.get('crossover', 'neutral')
+            
+            macd_details[tf] = crossover
+            
+            if crossover == 'bearish':
+                bearish_count += 1
+            elif crossover == 'bullish':
+                bullish_count += 1
+        
+        # HARD STOP: Если 2+ TF показывают противоречие для LONG
+        if is_long and bearish_count >= 2:
+            return {
+                "aligned": False,
+                "penalty": -10.0,  # Блокируем
+                "bearish_count": bearish_count,
+                "bullish_count": bullish_count,
+                "details": macd_details,
+                "reason": f"MACD bearish on {bearish_count} short timeframes - BLOCKING LONG entry"
+            }
+        
+        # HARD STOP: Если 2+ TF показывают противоречие для SHORT
+        if not is_long and bullish_count >= 2:
+            return {
+                "aligned": False,
+                "penalty": -10.0,
+                "bearish_count": bearish_count,
+                "bullish_count": bullish_count,
+                "details": macd_details,
+                "reason": f"MACD bullish on {bullish_count} short timeframes - BLOCKING SHORT entry"
+            }
+        
+        # PENALTY: Один противоречащий MACD
+        penalty = 0.0
+        if is_long and bearish_count >= 1:
+            penalty = -1.0 * bearish_count  # -1.0 за каждый bearish
+        elif not is_long and bullish_count >= 1:
+            penalty = -1.0 * bullish_count
+        
+        return {
+            "aligned": penalty >= -1.0,  # Один bearish = aligned но с penalty
+            "penalty": penalty,
+            "bearish_count": bearish_count,
+            "bullish_count": bullish_count,
+            "details": macd_details,
+            "reason": f"MACD penalty: {penalty:.1f}" if penalty < 0 else "MACD aligned"
+        }
+    
+    def _check_hard_stops(self, analysis: Dict, entry_plan: Dict, is_long: bool, entry_timeframe: str = "5m") -> Dict:
+        """
+        Обязательные проверки которые БЛОКИРУЮТ вход
+        
+        Args:
+            analysis: Полный анализ актива
+            entry_plan: План входа
+            is_long: True для LONG, False для SHORT
+            entry_timeframe: Таймфрейм входа
+        
+        Returns:
+            {"blocked": bool, "stops": List[str], "can_proceed": bool, "details": Dict}
+        """
+        stops = []
+        blocked = False
+        details = {}
+        
+        composite = analysis.get('composite_signal', {})
+        
+        # STOP #1: Composite Signal = HOLD с низкой confidence
+        signal = composite.get('signal', 'HOLD')
+        confidence = composite.get('confidence', 0.5)
+        if signal == 'HOLD' and confidence < 0.5:
+            stops.append(f"Composite signal HOLD with low confidence ({confidence:.2f} < 0.5)")
+            blocked = True
+            details['composite_signal'] = {"signal": signal, "confidence": confidence}
+        
+        # STOP #2: Confidence слишком низкая
+        if confidence < 0.4:
+            stops.append(f"Composite confidence too low ({confidence:.2f} < 0.4)")
+            blocked = True
+            details['confidence'] = confidence
+        
+        # STOP #3: MACD bearish на 2+ коротких TF для LONG
+        if is_long:
+            macd_check = self._check_macd_alignment(analysis, is_long, entry_timeframe)
+            if macd_check.get("bearish_count", 0) >= 2:
+                stops.append(f"MACD bearish on {macd_check['bearish_count']} short timeframes")
+                blocked = True
+                details['macd'] = macd_check.get("details", {})
+        
+        # STOP #4: MACD bullish на 2+ коротких TF для SHORT
+        if not is_long:
+            macd_check = self._check_macd_alignment(analysis, is_long, entry_timeframe)
+            if macd_check.get("bullish_count", 0) >= 2:
+                stops.append(f"MACD bullish on {macd_check['bullish_count']} short timeframes")
+                blocked = True
+                details['macd'] = macd_check.get("details", {})
+        
+        # STOP #5: Volume слишком низкий для скальпинга
+        volume_check = self._check_scalping_volume(analysis, entry_timeframe)
+        if not volume_check.get("passed", True):
+            stops.append(volume_check.get("reason", "Volume too low"))
+            blocked = True
+            details['volume'] = volume_check.get("volume_ratios", {})
+        
+        # STOP #6: BB Squeeze без volume confirmation
+        for tf in ['1m', '5m', '15m']:
+            tf_data = analysis.get('timeframes', {}).get(tf, {})
+            bb = tf_data.get('indicators', {}).get('bollinger_bands', {})
+            vol_data = tf_data.get('indicators', {}).get('volume', {})
+            
+            if bb.get('squeeze', False) and vol_data.get('volume_ratio', 1.0) < 0.5:
+                stops.append(f"BB Squeeze on {tf} without volume confirmation (vol_ratio: {vol_data.get('volume_ratio', 0):.2f})")
+                blocked = True
+                details['bb_squeeze'] = {tf: {"squeeze": True, "volume_ratio": vol_data.get('volume_ratio', 0)}}
+                break
+        
+        return {
+            "blocked": blocked,
+            "stops": stops,
+            "can_proceed": not blocked,
+            "details": details
+        }
+    
     def _calculate_opportunity_score(self, analysis: Dict, ticker: Dict, btc_trend: str = "neutral", entry_plan: Dict = None) -> Dict[str, Any]:
         """
         Расчёт scoring возможности (0-10) на основе 10-факторной матрицы.
-        Returns: {"total": float, "breakdown": Dict}
+        Returns: {"total": float, "breakdown": Dict, "blocked": bool, "reason": str, "warning": str}
         """
+        # HARD STOP: Проверка composite signal ПЕРВЫМ
+        composite_check = self._check_composite_signal_hard_stop(analysis)
+        if composite_check.get("blocked", False):
+            return {
+                "total": 0.0,
+                "breakdown": {},
+                "blocked": True,
+                "reason": composite_check.get("reason", "Composite signal check failed"),
+                "warning": None
+            }
+        
         score = 0.0
         breakdown = {}
         
@@ -319,6 +583,33 @@ class MarketScanner:
             sell_signals = composite.get('sell_signals', 0)
             is_long = buy_signals > sell_signals
             is_short = sell_signals > buy_signals
+        
+        # Определяем entry timeframe (из entry_plan или по умолчанию)
+        entry_timeframe = "5m"  # По умолчанию
+        if entry_plan and entry_plan.get('timeframe'):
+            entry_timeframe = entry_plan.get('timeframe')
+        
+        # Проверка volume для скальпинга
+        volume_check = self._check_scalping_volume(analysis, entry_timeframe)
+        if not volume_check.get("passed", True):
+            return {
+                "total": 0.0,
+                "breakdown": {},
+                "blocked": True,
+                "reason": volume_check.get("reason", "Volume check failed"),
+                "warning": None
+            }
+        
+        # Проверка MACD alignment
+        macd_check = self._check_macd_alignment(analysis, is_long, entry_timeframe)
+        if not macd_check.get("aligned", True) or macd_check.get("penalty", 0) <= -10.0:
+            return {
+                "total": 0.0,
+                "breakdown": {},
+                "blocked": True,
+                "reason": macd_check.get("reason", "MACD alignment check failed"),
+                "warning": None
+            }
             
         # 1. Trend Alignment (0-2.0)
         # Multi-timeframe alignment
@@ -436,46 +727,142 @@ class MarketScanner:
         breakdown['trend_strength'] = adx_score
         score += adx_score
 
-        # 9. Order Blocks (0-0.5)
+        # SMART MONEY ИНДИКАТОРЫ (институциональная активность)
+        # CVD и Order Blocks показывают где крупные игроки накапливают/распределяют
+        # Эти сигналы надежнее розничных индикаторов (RSI, MACD)
+        
+        # 9. Order Blocks - зоны институциональных ордеров (0-1.5, высокий вес)
         ob_score = 0.0
         order_blocks = h4_data.get('order_blocks', [])
+        
         if is_long:
             has_bullish_ob = any(ob['type'] == 'bullish_ob' for ob in order_blocks)
-            if has_bullish_ob: ob_score = 0.5
+            if has_bullish_ob:
+                ob_score = 1.5  # Bullish order block - сильная поддержка
+                bullish_count = len([ob for ob in order_blocks if ob['type'] == 'bullish_ob'])
+                logger.debug(f"{ticker.get('symbol', 'UNKNOWN')}: {bullish_count} bullish order block(s) detected (+1.5)")
         elif is_short:
             has_bearish_ob = any(ob['type'] == 'bearish_ob' for ob in order_blocks)
-            if has_bearish_ob: ob_score = 0.5
+            if has_bearish_ob:
+                ob_score = -1.0  # Bearish order block - сильное сопротивление для short
+                bearish_count = len([ob for ob in order_blocks if ob['type'] == 'bearish_ob'])
+                logger.debug(f"{ticker.get('symbol', 'UNKNOWN')}: {bearish_count} bearish order block(s) detected (-1.0)")
         
         breakdown['order_blocks'] = ob_score
         score += ob_score
 
-        # 10. CVD Divergence (0-0.5)
+        # 10. CVD Divergence - Smart Money индикатор (0-1.5, высокий вес)
         cvd_score = 0.0
         cvd_data = analysis.get('cvd_analysis', {})
+        
         if cvd_data.get('signal') == 'BULLISH_ABSORPTION' and is_long:
-             cvd_score = 0.5
+            cvd_score = 1.5  # Институциональное накопление - сильный сигнал
+            logger.debug(f"{ticker.get('symbol', 'UNKNOWN')}: CVD bullish absorption detected (+1.5)")
         elif cvd_data.get('signal') == 'BEARISH_ABSORPTION' and is_short:
-             cvd_score = 0.5
+            cvd_score = 1.5  # Институциональная дистрибуция для short - сильный сигнал
+            logger.debug(f"{ticker.get('symbol', 'UNKNOWN')}: CVD bearish absorption detected (+1.5)")
+        elif cvd_data.get('signal') == 'BEARISH_ABSORPTION' and is_long:
+            cvd_score = -1.0  # Институциональная дистрибуция - медвежий сигнал
+            logger.debug(f"{ticker.get('symbol', 'UNKNOWN')}: CVD bearish absorption detected for LONG position (-1.0)")
+        elif cvd_data.get('signal') == 'BULLISH_ABSORPTION' and is_short:
+            cvd_score = -1.0  # Институциональное накопление - бычий сигнал (плохо для short)
+            logger.debug(f"{ticker.get('symbol', 'UNKNOWN')}: CVD bullish absorption detected for SHORT position (-1.0)")
         
         breakdown['cvd'] = cvd_score
         score += cvd_score
         
-        return {"total": min(10.0, score), "breakdown": breakdown}
+        # Применяем penalties
+        volume_penalty = volume_check.get("score_penalty", 0.0)
+        if volume_penalty < 0:
+            score += volume_penalty
+            breakdown['volume_penalty'] = volume_penalty
+        
+        macd_penalty = macd_check.get("penalty", 0.0)
+        if macd_penalty < 0:
+            score += macd_penalty
+            breakdown['macd_penalty'] = macd_penalty
+        
+        # Применяем penalty multiplier от composite signal (для HOLD с средней confidence)
+        penalty_multiplier = composite_check.get("penalty_multiplier", 1.0)
+        final_score = score * penalty_multiplier
+        
+        # Ограничиваем score в диапазоне 0-10
+        final_score_capped = min(10.0, max(0.0, final_score))
+        
+        # Логируем финальный score
+        symbol = ticker.get('symbol', 'UNKNOWN')
+        logger.info(f"{symbol}: Final opportunity score = {final_score_capped:.2f} (raw: {final_score:.2f}, penalty_mult: {penalty_multiplier:.2f})")
+        
+        return {
+            "total": final_score_capped,
+            "breakdown": breakdown,
+            "blocked": False,
+            "reason": None,
+            "warning": composite_check.get("warning")
+        }
     
     def _estimate_probability(self, score: float, analysis: Dict) -> float:
-        """Оценка вероятности успеха"""
+        """
+        Оценка вероятности успеха - ИСПРАВЛЕННАЯ ВЕРСИЯ
+        
+        Args:
+            score: Confluence score (0-10)
+            analysis: Полный анализ актива
+        
+        Returns:
+            Вероятность успеха (0.0-0.95)
+        """
+        composite = analysis.get('composite_signal', {})
+        signal = composite.get('signal', 'HOLD')
+        confidence = composite.get('confidence', 0.5)
+        
+        # HARD STOP #1: HOLD сигнал с низкой confidence
+        if signal == 'HOLD' and confidence < 0.5:
+            return 0.0  # Нулевая вероятность!
+        
+        # HARD STOP #2: Confidence слишком низкая
+        if confidence < 0.4:
+            return 0.0  # Нулевая вероятность!
         
         # Базовая вероятность от score
-        base_prob = 0.5 + (score - 5) * 0.05  # 0.5 при score=5, 0.75 при score=10
+        # Score 5.0 = 50%, Score 8.0 = 65%, Score 10.0 = 75%
+        base_prob = 0.5 + (score - 5) * 0.05
+        base_prob = max(0.3, min(0.75, base_prob))  # Ограничиваем 30-75%
         
-        # Корректировка на confidence
-        confidence = analysis.get('composite_signal', {}).get('confidence', 0.5)
-        adjusted_prob = base_prob * (0.7 + confidence * 0.6)  # 0.7-1.3x multiplier
+        # КРИТИЧНО: Confidence - это MULTIPLIER, не additive
+        # Если confidence = 0.5, то probability должна быть 50% от base
+        # Если confidence = 0.8, то probability = 80% от base
+        adjusted_prob = base_prob * confidence
         
-        return round(min(0.95, max(0.3, adjusted_prob)), 2)
+        # Дополнительная корректировка на composite score
+        comp_score = abs(composite.get('score', 0))
+        if comp_score < 3:
+            adjusted_prob *= 0.7  # Ещё больше снижаем при слабом composite score
+        
+        # Корректировка на signal type
+        if signal == 'STRONG_BUY' or signal == 'STRONG_SELL':
+            adjusted_prob *= 1.1  # +10% за strong signal
+        elif signal == 'BUY' or signal == 'SELL':
+            adjusted_prob *= 1.0  # Без изменений
+        elif signal == 'HOLD':
+            adjusted_prob *= 0.5  # -50% за HOLD (даже если confidence OK)
+        
+        # Финальные ограничения
+        final_prob = min(0.95, max(0.0, adjusted_prob))
+        
+        return round(final_prob, 2)
     
-    def _generate_entry_plan(self, analysis: Dict, ticker: Dict, account_balance: float = 30.0, risk_percent: float = 0.02) -> Dict[str, Any]:
-        """Генерация плана входа (для LONG или SHORT) с Динамическим риск-менеджментом"""
+    def _generate_entry_plan(self, analysis: Dict, ticker: Dict, account_balance: Optional[float] = None, risk_percent: float = 0.02) -> Dict[str, Any]:
+        """Генерация плана входа (для LONG или SHORT) с Динамическим риск-менеджментом
+        
+        ВАЖНО: account_balance должен быть передан из get_account_info()!
+        Если None - вернёт план с предупреждением о недоступности баланса.
+        """
+        
+        # КРИТИЧЕСКАЯ ПРОВЕРКА: баланс не может быть None
+        if account_balance is None or account_balance <= 0:
+            logger.error(f"Cannot generate entry plan: invalid balance {account_balance}")
+            return None
         
         current_price = ticker['price']
         h4_indicators = analysis['timeframes'].get('4h', {}).get('indicators', {})
@@ -512,7 +899,12 @@ class MarketScanner:
         risk_reward = reward_per_share / risk_per_share if risk_per_share > 0 else 0
         
         # DYNAMIC RISK MANAGEMENT
-        risk_usd = account_balance * risk_percent
+        if account_balance is None or account_balance <= 0:
+            # Если баланс недоступен, используем placeholder с предупреждением
+            risk_usd = 0.0
+            logger.warning("⚠️ Cannot calculate risk: account balance unavailable!")
+        else:
+            risk_usd = account_balance * risk_percent
         
         # Рассчитываем размер позиции
         if risk_per_share > 0:
@@ -524,7 +916,15 @@ class MarketScanner:
         qty = round(qty, 6)
         position_value = qty * current_price
         
-        return {
+        # Добавляем предупреждение если баланс недоступен
+        warning = None
+        if account_balance is None or account_balance <= 0:
+            warning = "⚠️ CRITICAL: Account balance unavailable! Position size calculation is INVALID. User MUST verify balance before trading!"
+            qty = 0.0
+            position_value = 0.0
+            risk_usd = 0.0
+        
+        result = {
             "side": side,
             "entry_price": round(current_price, 4),
             "stop_loss": round(stop_loss, 4),
@@ -535,8 +935,16 @@ class MarketScanner:
             "risk_usd": round(risk_usd, 2),
             "max_risk_allowed": round(risk_usd, 2),
             "leverage_hint": "Use 1x-3x max",
-            "position_size_calc": f"Risk ${risk_usd:.2f} / Stop Dist {risk_per_share:.4f} = {qty} units"
+            "position_size_calc": f"Risk ${risk_usd:.2f} / Stop Dist {risk_per_share:.4f} = {qty} units" if account_balance else "BALANCE UNAVAILABLE - CANNOT CALCULATE"
         }
+        
+        if warning:
+            result["warning"] = warning
+            result["balance_available"] = False
+        else:
+            result["balance_available"] = True
+        
+        return result
     
     def _generate_reasoning(self, analysis: Dict, score: float) -> str:
         """Генерация объяснения почему это хорошая возможность"""

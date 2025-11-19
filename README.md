@@ -61,6 +61,8 @@ Credentials уже настроены в `config/credentials.json` (защище
 
 Добавьте **ОБА** сервера в Cursor MCP settings:
 
+⚠️ **ВАЖНО: Никогда не публикуйте реальные API ключи в коде!**
+
 ```json
 {
   "mcpServers": {
@@ -68,8 +70,8 @@ Credentials уже настроены в `config/credentials.json` (защище
       "command": "node",
       "args": ["/Users/Gyber/GYBERNATY-ECOSYSTEM/TRADER-AGENT/bybit-mcp/build/index.js"],
       "env": {
-        "BYBIT_API_KEY": "V84NJog5v9bM5k6fRn",
-        "BYBIT_API_SECRET": "RYZ1JeyGsWhtjigF01rKDYzq3lRbvlxvU89L",
+        "BYBIT_API_KEY": "your_api_key_here",
+        "BYBIT_API_SECRET": "your_api_secret_here",
         "BYBIT_TESTNET": "false",
         "DEBUG": "false"
       }

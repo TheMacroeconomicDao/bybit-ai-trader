@@ -9,8 +9,14 @@
 
 ### Учётные данные Bybit
 ```
-Публичный ключ: V84NJog5v9bM5k6fRn
-Секретный ключ: RYZ1JeyGsWhtjigF01rKDYzq3lRbvlxvU89L
+⚠️ ВАЖНО: API ключи хранятся в GitHub Secrets или системных переменных!
+Никогда не публикуйте реальные ключи в коде!
+
+Используйте:
+- GitHub Secrets: BYBIT_API_KEY, BYBIT_API_SECRET
+- Системные переменные: export BYBIT_API_KEY="..."
+- Локальный файл: config/credentials.json (в .gitignore)
+
 Баланс: $30 USD
 Доступ: Spot + Futures (всё открыто)
 ```

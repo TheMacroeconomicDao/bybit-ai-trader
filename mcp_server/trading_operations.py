@@ -727,53 +727,108 @@ class TradingOperations:
                     symbol=symbol
                 )
                 
-                if instrument_info.get("retCode") == 0:
-                    instrument_list = instrument_info.get("result", {}).get("list", [])
-                    if instrument_list:
-                        instrument = instrument_list[0]
-                        lot_size = instrument.get("lotSizeFilter", {})
-                        base_precision = float(lot_size.get("basePrecision", "0.000001"))
+                # КРИТИЧЕСКАЯ ПРОВЕРКА: instrument info должен быть доступен
+                if not instrument_info:
+                    logger.error(f"Cannot place order for {symbol}: instrument info unavailable")
+                    raise Exception(f"Order validation failed: Unable to get instrument info for {symbol}")
+                
+                if instrument_info.get("retCode") != 0:
+                    error_msg = instrument_info.get("retMsg", "Unknown error")
+                    logger.error(f"Failed to get instrument info for {symbol}: {error_msg}")
+                    raise Exception(f"Order validation failed: Unable to get instrument info for {symbol}. API error: {error_msg}")
+                
+                instrument_list = instrument_info.get("result", {}).get("list", [])
+                if not instrument_list:
+                    logger.error(f"Cannot place order for {symbol}: instrument list is empty")
+                    raise Exception(f"Order validation failed: No instrument data available for {symbol}")
+                
+                instrument = instrument_list[0]
+                lot_size_filter = instrument.get("lotSizeFilter", {})
+                
+                if not lot_size_filter:
+                    logger.error(f"Cannot place order for {symbol}: lotSizeFilter missing")
+                    raise Exception(f"Order validation failed: Missing lotSizeFilter for {symbol}")
+                
+                base_precision = float(lot_size_filter.get("basePrecision", "0.000001"))
+                
+                # Округляем количество до basePrecision
+                import math
+                quantity_rounded = math.floor(quantity / base_precision) * base_precision
+                
+                # Форматируем без научной нотации
+                precision_digits = len(str(base_precision).split('.')[-1])
+                quantity_str = f"{quantity_rounded:.{precision_digits}f}".rstrip('0').rstrip('.')
+                
+                # Get minimum requirements with safe fallbacks
+                try:
+                    min_order_qty = float(lot_size_filter.get("minOrderQty", 0))
+                    min_order_amt = float(lot_size_filter.get("minOrderAmt", 0))
+                    
+                    # Sanity check: минимумы не могут быть 0 или слишком большими
+                    if min_order_qty <= 0:
+                        logger.warning(f"{symbol}: minOrderQty is {min_order_qty}, using default 0.001")
+                        min_order_qty = 0.001
+                    
+                    if min_order_amt <= 0:
+                        logger.warning(f"{symbol}: minOrderAmt is {min_order_amt}, using default 5.0")
+                        min_order_amt = 5.0
                         
-                        # Округляем количество до basePrecision
-                        import math
-                        quantity_rounded = math.floor(quantity / base_precision) * base_precision
-                        
-                        # Форматируем без научной нотации
-                        precision_digits = len(str(base_precision).split('.')[-1])
-                        quantity_str = f"{quantity_rounded:.{precision_digits}f}".rstrip('0').rstrip('.')
-                        
-                        # Проверяем минимальные требования
-                        min_order_qty = float(lot_size.get("minOrderQty", 0))
-                        min_order_amt = float(lot_size.get("minOrderAmt", 5))
-                        
-                        # Если количество меньше минимального, используем минимальное
-                        if quantity_rounded < min_order_qty:
-                            quantity_rounded = min_order_qty
-                            quantity_str = f"{quantity_rounded:.{precision_digits}f}".rstrip('0').rstrip('.')
-                            logger.warning(f"Quantity adjusted to minOrderQty: {quantity_str}")
-                        
-                        # Если сумма меньше минимальной, предупреждаем
-                        if price:
-                            actual_amount = quantity_rounded * price
+                except (ValueError, TypeError) as e:
+                    logger.error(f"Failed to parse min requirements for {symbol}: {e}")
+                    raise Exception(f"Order validation failed: Invalid minimum requirements for {symbol}")
+                
+                # Проверяем количество против минимального
+                if quantity_rounded < min_order_qty:
+                    # Получаем цену для расчета минимальной суммы позиции
+                    if price:
+                        required_position_value = min_order_qty * price
+                    else:
+                        # Для market ордеров используем текущую цену
+                        ticker = self.session.get_tickers(category=category, symbol=symbol)
+                        if ticker.get("retCode") == 0:
+                            ticker_data = ticker.get("result", {}).get("list", [{}])[0]
+                            current_price = float(ticker_data.get("lastPrice", 0))
+                            required_position_value = min_order_qty * current_price
                         else:
-                            # Для market ордеров используем текущую цену
-                            ticker = self.session.get_tickers(category=category, symbol=symbol)
-                            if ticker.get("retCode") == 0:
-                                ticker_data = ticker.get("result", {}).get("list", [{}])[0]
-                                current_price = float(ticker_data.get("lastPrice", 0))
-                                actual_amount = quantity_rounded * current_price
-                            else:
-                                actual_amount = quantity_rounded * 100000  # Fallback для BTC
-                        
-                        if actual_amount < min_order_amt:
-                            logger.warning(f"Order amount (${actual_amount:.2f}) is below minOrderAmt (${min_order_amt:.2f})")
-                        
-                        quantity = quantity_rounded
-                        logger.info(f"Quantity rounded to {quantity_str} (basePrecision: {base_precision})")
+                            required_position_value = min_order_qty * 100000  # Fallback
+                    
+                    logger.error(
+                        f"Order qty {quantity_rounded} below minimum {min_order_qty} for {symbol}. "
+                        f"Need at least ${required_position_value:.2f} position size"
+                    )
+                    raise Exception(
+                        f"Order quantity {quantity_rounded} is below minimum {min_order_qty} for {symbol}. "
+                        f"Required minimum position: ${required_position_value:.2f}"
+                    )
+                
+                # Проверяем стоимость позиции против минимальной суммы
+                if price:
+                    position_value = quantity_rounded * price
                 else:
-                    logger.warning(f"Could not get instrument info, using original quantity")
+                    # Для market ордеров используем текущую цену
+                    ticker = self.session.get_tickers(category=category, symbol=symbol)
+                    if ticker.get("retCode") == 0:
+                        ticker_data = ticker.get("result", {}).get("list", [{}])[0]
+                        current_price = float(ticker_data.get("lastPrice", 0))
+                        position_value = quantity_rounded * current_price
+                    else:
+                        position_value = quantity_rounded * 100000  # Fallback для BTC
+                
+                if position_value < min_order_amt:
+                    logger.error(
+                        f"Position value ${position_value:.2f} below minimum ${min_order_amt} for {symbol}"
+                    )
+                    raise Exception(
+                        f"Position value ${position_value:.2f} is below minimum ${min_order_amt} for {symbol}"
+                    )
+                
+                quantity = quantity_rounded
+                logger.info(f"Quantity validated and rounded to {quantity_str} (basePrecision: {base_precision})")
+                logger.info(f"Order meets requirements: qty={quantity_rounded} >= {min_order_qty}, value=${position_value:.2f} >= ${min_order_amt}")
+                
             except Exception as e:
-                logger.warning(f"Error getting instrument info for rounding: {e}. Using original quantity.")
+                logger.error(f"Critical error validating order for {symbol}: {e}")
+                raise
             
             # Параметры ордера
             # ВАЖНО: Для фьючерсов Pybit может требовать другие параметры

@@ -34,9 +34,12 @@ ENV/
 
 # Credentials - ВАЖНО!
 config/credentials.json
+config/autonomous_agent.json
 config/*.key
 *.env
 .env
+.env.local
+.env.*.local
 
 # Logs
 *.log

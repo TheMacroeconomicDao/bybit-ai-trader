@@ -12,8 +12,8 @@ pip install -r requirements.txt
 ### Вариант A: Переменные окружения (рекомендуется)
 
 ```bash
-export QWEN_API_KEY="sk-6f5319fb244f4f9faa1595825cf87a05"
-export BYBIT_API_KEY="ваш_bybit_api_key"
+export QWEN_API_KEY="your_qwen_api_key_here"
+export BYBIT_API_KEY="your_bybit_api_key"
 export BYBIT_API_SECRET="ваш_bybit_api_secret"
 ```
 
