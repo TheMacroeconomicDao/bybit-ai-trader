@@ -681,7 +681,39 @@ class BybitClient:
                 return ohlcv
                 
             except Exception as e:
+                # Парсим ошибку CCXT для извлечения retCode
+                parsed_error = parse_ccxt_error(e)
                 error_msg = str(e).lower()
+                
+                # Если нашли retCode в ошибке - обрабатываем специфично
+                if parsed_error["parsed"] and parsed_error["retCode"]:
+                    ret_code = parsed_error["retCode"]
+                    ret_msg = parsed_error["retMsg"]
+                    
+                    if ret_code == 10003:
+                        logger.error(f"❌ API Key INVALID (retCode=10003) for {symbol} OHLCV")
+                        raise Exception(
+                            f"Bybit API Key is INVALID! "
+                            f"Please check your BYBIT_API_KEY and BYBIT_API_SECRET. "
+                            f"Error: {ret_msg}"
+                        )
+                    elif ret_code == 10004:
+                        logger.error(f"❌ API Key has NO PERMISSIONS (retCode=10004) for {symbol} OHLCV")
+                        raise Exception(
+                            f"Bybit API Key has insufficient permissions! "
+                            f"Please enable READ permissions on Bybit API Management page. "
+                            f"Error: {ret_msg}"
+                        )
+                    elif ret_code == 10005:
+                        logger.error(f"❌ IP NOT WHITELISTED (retCode=10005) for {symbol} OHLCV")
+                        raise Exception(
+                            f"IP address is not whitelisted! "
+                            f"Please add your server's IP to Bybit API whitelist. "
+                            f"Error: {ret_msg}"
+                        )
+                    else:
+                        logger.error(f"Bybit API error (retCode={ret_code}) for {symbol} OHLCV: {ret_msg}")
+                        raise Exception(f"Bybit API error (retCode={ret_code}): {ret_msg}")
                 
                 # Проверяем на DNS ошибки
                 if any(keyword in error_msg for keyword in ["dns", "could not contact dns", "name resolution", "gaierror", "cannot connect to host"]):

@@ -24,6 +24,22 @@ from mcp.server.stdio import stdio_server
 from mcp.types import Tool, TextContent
 from loguru import logger
 
+# Загрузка переменных окружения из .env файла (ПОСЛЕ импорта logger)
+try:
+    from dotenv import load_dotenv
+    # Загружаем .env из корня проекта (на уровень выше mcp_server)
+    env_path = Path(__file__).parent.parent / ".env"
+    if env_path.exists():
+        load_dotenv(dotenv_path=env_path)
+        logger.info(f"✅ Loaded .env file from {env_path}")
+    else:
+        # Пробуем загрузить из текущей директории
+        load_dotenv()
+        logger.debug("Tried to load .env from current directory")
+except ImportError:
+    # python-dotenv не установлен, продолжаем без него
+    logger.warning("⚠️ python-dotenv not installed, .env file will not be loaded automatically")
+
 from trading_operations import (
     TradingOperations,
     get_all_account_balances,
@@ -52,6 +68,14 @@ logger.add(
     retention="30 days",
     level="DEBUG"
 )
+
+# Проверка загрузки переменных окружения из .env
+env_path = Path(__file__).parent.parent / ".env"
+if env_path.exists() and os.getenv("BYBIT_API_KEY"):
+    logger.info(f"✅ BYBIT_API_KEY loaded from .env (length: {len(os.getenv('BYBIT_API_KEY'))})")
+    logger.info(f"   Preview: {os.getenv('BYBIT_API_KEY')[:8]}...{os.getenv('BYBIT_API_KEY')[-4:]}")
+elif not os.getenv("BYBIT_API_KEY"):
+    logger.warning("⚠️ BYBIT_API_KEY not found in environment variables - will try credentials.json")
 
 # Инициализация MCP сервера
 app = Server("bybit-trading-complete")

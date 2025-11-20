@@ -11,6 +11,13 @@ from pathlib import Path
 from typing import Optional
 from loguru import logger
 
+# Загрузка переменных окружения
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass  # dotenv не обязателен, если переменные уже установлены
+
 from autonomous_agent.autonomous_analyzer import AutonomousAnalyzer
 from autonomous_agent.telegram_formatter import TelegramFormatter
 
@@ -29,6 +36,11 @@ def load_config() -> dict:
     config["bybit_api_secret"] = os.getenv("BYBIT_API_SECRET", "")
     config["qwen_model"] = os.getenv("QWEN_MODEL", "qwen/qwen-turbo")  # OpenRouter формат модели
     config["testnet"] = os.getenv("BYBIT_TESTNET", "false").lower() == "true"
+    
+    # Новые параметры для автономной торговли
+    config["auto_trade"] = os.getenv("AUTO_TRADE", "false").lower() == "true"
+    config["max_concurrent_positions"] = int(os.getenv("MAX_CONCURRENT_POSITIONS", "1"))
+    config["risk_per_trade"] = float(os.getenv("RISK_PER_TRADE", "0.02"))  # 2% по умолчанию
     
     # Из файла конфигурации (если есть)
     config_file = Path(__file__).parent.parent / "config" / "autonomous_agent.json"
@@ -107,7 +119,8 @@ async def main():
             bybit_api_key=config["bybit_api_key"],
             bybit_api_secret=config["bybit_api_secret"],
             qwen_model=config["qwen_model"],
-            testnet=config["testnet"]
+            testnet=config["testnet"],
+            auto_trade=config["auto_trade"]  # НОВОЕ: поддержка автоматической торговли
         )
         
         # Запуск анализа
@@ -116,6 +129,30 @@ async def main():
         
         if result.get("success"):
             logger.info("Analysis completed successfully")
+            
+            # Автоматическое исполнение сигналов (если включено)
+            if config.get("auto_trade") and analyzer.trading_ops:
+                logger.info("Auto-trade enabled, executing top signals...")
+                longs = result.get("top_3_longs", [])
+                shorts = result.get("top_3_shorts", [])
+                
+                execution_result = await analyzer.execute_top_signals(
+                    longs=longs,
+                    shorts=shorts,
+                    max_positions=config.get("max_concurrent_positions", 1),
+                    risk_per_trade=config.get("risk_per_trade", 0.02)
+                )
+                
+                result["execution"] = execution_result
+                
+                if execution_result.get("success"):
+                    logger.info(
+                        f"✅ Executed {execution_result.get('executed_trades', 0)} trades successfully"
+                    )
+                else:
+                    logger.warning(
+                        f"⚠️ Execution failed: {execution_result.get('error', 'Unknown error')}"
+                    )
             
             # Форматирование для Telegram
             formatter = TelegramFormatter()

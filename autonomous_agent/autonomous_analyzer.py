@@ -27,6 +27,30 @@ except ImportError:
     SIGNAL_TRACKING_AVAILABLE = False
     SignalTracker = None
 
+# Импорты для полной интеграции (Фаза 1)
+try:
+    from mcp_server.trading_operations import TradingOperations, get_all_account_balances
+    TRADING_OPERATIONS_AVAILABLE = True
+except ImportError:
+    TRADING_OPERATIONS_AVAILABLE = False
+    TradingOperations = None
+    get_all_account_balances = None
+
+try:
+    from mcp_server.quality_metrics import QualityMetrics
+    QUALITY_METRICS_AVAILABLE = True
+except ImportError:
+    QUALITY_METRICS_AVAILABLE = False
+    QualityMetrics = None
+
+try:
+    from mcp_server.cache_manager import cached, get_cache_manager
+    CACHE_MANAGER_AVAILABLE = True
+except ImportError:
+    CACHE_MANAGER_AVAILABLE = False
+    cached = lambda ttl: lambda f: f  # No-op decorator
+    get_cache_manager = None
+
 
 class AutonomousAnalyzer:
     """Автономный анализатор рынка с Qwen AI"""
@@ -38,7 +62,8 @@ class AutonomousAnalyzer:
         bybit_api_secret: str,
         qwen_model: str = "qwen/qwen-turbo",  # OpenRouter формат
         testnet: bool = False,
-        signal_tracker: Optional[SignalTracker] = None
+        signal_tracker: Optional[SignalTracker] = None,
+        auto_trade: bool = False  # НОВЫЙ параметр для автоматической торговли
     ):
         """
         Инициализация автономного анализатора
@@ -50,6 +75,7 @@ class AutonomousAnalyzer:
             qwen_model: Модель Qwen для использования
             testnet: Использовать testnet для Bybit
             signal_tracker: Опциональный SignalTracker для записи сигналов
+            auto_trade: Включить автоматическое исполнение сделок
         """
         # Инициализация Qwen клиента
         self.qwen = QwenClient(qwen_api_key, qwen_model)
@@ -59,15 +85,45 @@ class AutonomousAnalyzer:
         self.technical_analysis = TechnicalAnalysis(self.bybit_client)
         self.market_scanner = MarketScanner(self.bybit_client, self.technical_analysis)
         
-        # Signal tracker для контроля качества
+        # Signal tracker для контроля качества (создаём по умолчанию если доступен)
+        if signal_tracker is None and SIGNAL_TRACKING_AVAILABLE:
+            signal_tracker = SignalTracker("data/signals.db")
+            logger.info("SignalTracker created automatically")
+        
         self.signal_tracker = signal_tracker
         if self.signal_tracker:
             logger.info("Signal tracking enabled")
         
+        # TradingOperations для автоматической торговли (Фаза 1)
+        self.trading_ops = None
+        self.auto_trade = auto_trade
+        if TRADING_OPERATIONS_AVAILABLE:
+            self.trading_ops = TradingOperations(
+                bybit_api_key,
+                bybit_api_secret,
+                testnet
+            )
+            logger.info(f"Trading Operations initialized (auto_trade={auto_trade})")
+        elif auto_trade:
+            logger.warning("TradingOperations not available, auto_trade disabled")
+            self.auto_trade = False
+        
+        # QualityMetrics для анализа эффективности (Фаза 2)
+        self.quality_metrics = None
+        if QUALITY_METRICS_AVAILABLE and self.signal_tracker:
+            self.quality_metrics = QualityMetrics(self.signal_tracker)
+            logger.info("Quality Metrics initialized")
+        
+        # CacheManager для оптимизации (Фаза 3)
+        self.cache_manager = None
+        if CACHE_MANAGER_AVAILABLE:
+            self.cache_manager = get_cache_manager()
+            logger.info("Cache Manager initialized")
+        
         # Загружаем системные инструкции
         self.system_instructions = self._load_system_instructions()
         
-        logger.info("Autonomous Analyzer initialized")
+        logger.info("Autonomous Analyzer initialized (full integration)")
     
     def _load_system_instructions(self) -> str:
         """Загрузка системных инструкций для Qwen"""
@@ -76,22 +132,42 @@ class AutonomousAnalyzer:
         # Читаем основные инструкции
         instructions_parts = []
         
-        # Core instructions
+        # Core instructions (ОБЯЗАТЕЛЬНО)
         core_file = base_path / "prompts" / "agent_core_instructions.md"
         if core_file.exists():
             instructions_parts.append(f"=== CORE INSTRUCTIONS ===\n{core_file.read_text(encoding='utf-8')}\n")
         
-        # Zero risk methodology
+        # Market Analysis Protocol (КРИТИЧНО для анализа)
+        protocol_file = base_path / "prompts" / "market_analysis_protocol_optimized.md"
+        if protocol_file.exists():
+            instructions_parts.append(f"=== MARKET ANALYSIS PROTOCOL ===\n{protocol_file.read_text(encoding='utf-8')}\n")
+        else:
+            # Fallback на обычный протокол
+            protocol_file = base_path / "prompts" / "market_analysis_protocol.md"
+            if protocol_file.exists():
+                instructions_parts.append(f"=== MARKET ANALYSIS PROTOCOL ===\n{protocol_file.read_text(encoding='utf-8')}\n")
+        
+        # Entry Decision Framework (КРИТИЧНО для принятия решений)
+        entry_framework_file = base_path / "prompts" / "entry_decision_framework.md"
+        if entry_framework_file.exists():
+            instructions_parts.append(f"=== ENTRY DECISION FRAMEWORK ===\n{entry_framework_file.read_text(encoding='utf-8')}\n")
+        
+        # Position Monitoring Protocol (для управления позициями)
+        position_monitoring_file = base_path / "prompts" / "position_monitoring_protocol.md"
+        if position_monitoring_file.exists():
+            instructions_parts.append(f"=== POSITION MONITORING PROTOCOL ===\n{position_monitoring_file.read_text(encoding='utf-8')}\n")
+        
+        # Zero risk methodology (из knowledge_base)
         zero_risk_file = base_path / "knowledge_base" / "7_zero_risk_methodology.md"
         if zero_risk_file.exists():
             instructions_parts.append(f"=== ZERO RISK METHODOLOGY ===\n{zero_risk_file.read_text(encoding='utf-8')}\n")
         
-        # Market analysis framework
+        # Market analysis framework (из knowledge_base)
         analysis_file = base_path / "knowledge_base" / "6_market_analysis_framework.md"
         if analysis_file.exists():
             instructions_parts.append(f"=== MARKET ANALYSIS FRAMEWORK ===\n{analysis_file.read_text(encoding='utf-8')}\n")
         
-        # Entry strategies
+        # Entry strategies (из knowledge_base)
         entry_file = base_path / "knowledge_base" / "4_entry_strategies.md"
         if entry_file.exists():
             instructions_parts.append(f"=== ENTRY STRATEGIES ===\n{entry_file.read_text(encoding='utf-8')}\n")
@@ -241,7 +317,15 @@ class AutonomousAnalyzer:
             }
     
     async def _analyze_btc(self) -> Dict[str, Any]:
-        """Детальный анализ BTC"""
+        """Детальный анализ BTC (с кэшированием 5 минут если доступно)"""
+        # Используем кэш если доступен
+        if self.cache_manager:
+            cache_key = f"_analyze_btc"
+            cached_result = self.cache_manager.get(cache_key)
+            if cached_result is not None:
+                logger.debug("Cache hit for BTC analysis")
+                return cached_result
+        
         try:
             # Получаем цену BTC
             btc_price = await self.bybit_client.get_asset_price("BTC/USDT")
@@ -259,12 +343,18 @@ class AutonomousAnalyzer:
             except:
                 funding_rate = None
             
-            return {
+            result = {
                 "price": btc_price,
                 "technical_analysis": btc_analysis,
                 "funding_rate": funding_rate,
                 "status": self._determine_btc_status(btc_analysis)
             }
+            
+            # Сохраняем в кэш если доступен
+            if self.cache_manager:
+                self.cache_manager.set("_analyze_btc", result, ttl=300)
+            
+            return result
         except Exception as e:
             logger.error(f"Error analyzing BTC: {e}")
             return {"error": str(e)}
@@ -283,7 +373,15 @@ class AutonomousAnalyzer:
             return "neutral"
     
     async def _scan_all_opportunities(self) -> List[Dict[str, Any]]:
-        """Параллельное сканирование всех возможностей"""
+        """Параллельное сканирование всех возможностей (с кэшированием 3 минуты если доступно)"""
+        # Используем кэш если доступен
+        if self.cache_manager:
+            cache_key = f"_scan_all_opportunities"
+            cached_result = self.cache_manager.get(cache_key)
+            if cached_result is not None:
+                logger.debug("Cache hit for market scan")
+                return cached_result
+        
         all_opportunities = []
         
         # Параллельный запуск всех типов сканирования с увеличенными лимитами
@@ -339,6 +437,11 @@ class AutonomousAnalyzer:
         all_opportunities.sort(key=lambda x: x.get("score", 0), reverse=True)
         
         logger.info(f"Found {len(all_opportunities)} total opportunities")
+        
+        # Сохраняем в кэш если доступен
+        if self.cache_manager:
+            self.cache_manager.set("_scan_all_opportunities", all_opportunities, ttl=180)
+        
         return all_opportunities
     
     async def _deep_analyze_top_candidates(
@@ -346,7 +449,17 @@ class AutonomousAnalyzer:
         opportunities: List[Dict[str, Any]],
         top_n: int = 10
     ) -> List[Dict[str, Any]]:
-        """Детальный анализ топ кандидатов"""
+        """Детальный анализ топ кандидатов (с кэшированием 2 минуты если доступно)"""
+        # Используем кэш если доступен (но только для одинаковых входных данных)
+        if self.cache_manager and len(opportunities) > 0:
+            # Создаём ключ на основе первых N символов символов
+            symbols_key = "_".join([opp.get("symbol", "") for opp in opportunities[:top_n]])
+            cache_key = f"_deep_analyze_top_candidates_{symbols_key}_{top_n}"
+            cached_result = self.cache_manager.get(cache_key)
+            if cached_result is not None:
+                logger.debug("Cache hit for deep analysis")
+                return cached_result
+        
         # Берем топ N по score
         top_candidates = opportunities[:top_n]
         
@@ -397,6 +510,12 @@ class AutonomousAnalyzer:
         
         # Сортируем по final_score
         detailed_analysis.sort(key=lambda x: x.get("final_score", 0), reverse=True)
+        
+        # Сохраняем в кэш если доступен
+        if self.cache_manager and len(opportunities) > 0:
+            symbols_key = "_".join([opp.get("symbol", "") for opp in opportunities[:top_n]])
+            cache_key = f"_deep_analyze_top_candidates_{symbols_key}_{top_n}"
+            self.cache_manager.set(cache_key, detailed_analysis, ttl=120)
         
         return detailed_analysis
     
@@ -692,6 +811,134 @@ class AutonomousAnalyzer:
         except Exception as e:
             logger.error(f"Error recording signal to tracker: {e}", exc_info=True)
             return None
+    
+    async def execute_top_signals(
+        self,
+        longs: List[Dict[str, Any]],
+        shorts: List[Dict[str, Any]],
+        max_positions: int = 1,
+        risk_per_trade: float = 0.02
+    ) -> Dict[str, Any]:
+        """
+        Автоматическое исполнение топ сигналов
+        
+        Args:
+            longs: Топ long сигналы
+            shorts: Топ short сигналы
+            max_positions: Максимум одновременных позиций
+            risk_per_trade: Риск на сделку (2% по умолчанию)
+            
+        Returns:
+            Результаты исполнения
+        """
+        if not self.auto_trade:
+            logger.warning("Auto-trade disabled, skipping execution")
+            return {"success": False, "message": "Auto-trade disabled"}
+        
+        if not self.trading_ops:
+            logger.error("TradingOperations not available")
+            return {"success": False, "error": "TradingOperations not available"}
+        
+        executed_trades = []
+        
+        try:
+            # Получаем баланс используя функцию напрямую
+            if get_all_account_balances:
+                balances = get_all_account_balances(
+                    self.trading_ops.session,
+                    coin="USDT"
+                )
+                available_balance = balances.get("available", 0)
+            else:
+                logger.error("get_all_account_balances function not available")
+                return {"success": False, "error": "get_all_account_balances not available"}
+            
+            if available_balance < 100:  # Минимум $100
+                return {
+                    "success": False,
+                    "error": "Insufficient balance",
+                    "message": f"Available: ${available_balance:.2f}, need at least $100"
+                }
+            
+            # Выбираем лучший сигнал (highest confluence)
+            all_signals = longs + shorts
+            all_signals.sort(key=lambda x: x.get('confluence_score', 0), reverse=True)
+            
+            for signal in all_signals[:max_positions]:
+                try:
+                    # Расчет размера позиции на основе риска
+                    risk_amount = available_balance * risk_per_trade
+                    entry_price = float(signal.get('entry_price', 0))
+                    stop_loss = float(signal.get('stop_loss', 0))
+                    
+                    if entry_price <= 0 or stop_loss <= 0:
+                        logger.warning(f"Invalid prices for {signal.get('symbol')}: entry={entry_price}, sl={stop_loss}")
+                        continue
+                    
+                    # Расчет количества
+                    risk_per_unit = abs(entry_price - stop_loss)
+                    if risk_per_unit <= 0:
+                        logger.warning(f"Invalid risk per unit for {signal.get('symbol')}")
+                        continue
+                    
+                    quantity = risk_amount / risk_per_unit
+                    
+                    if quantity <= 0:
+                        logger.warning(f"Invalid quantity calculated for {signal.get('symbol')}: {quantity}")
+                        continue
+                    
+                    # Определяем category (по умолчанию linear для фьючерсов)
+                    category = signal.get('category', 'linear')
+                    side_str = "Buy" if signal.get('side', 'long').lower() == 'long' else "Sell"
+                    
+                    # Исполнение ордера
+                    result = await self.trading_ops.place_order(
+                        symbol=signal.get('symbol', '').replace('/', '').replace(':', ''),
+                        side=side_str,
+                        order_type="Market",
+                        quantity=quantity,
+                        stop_loss=stop_loss,
+                        take_profit=float(signal.get('take_profit', 0)),
+                        category=category,
+                        leverage=2 if category != 'spot' else None
+                    )
+                    
+                    executed_trades.append({
+                        "signal": signal,
+                        "order_result": result,
+                        "quantity": quantity,
+                        "risk_amount": risk_amount
+                    })
+                    
+                    logger.info(
+                        f"Executed: {signal.get('symbol')} {signal.get('side')} "
+                        f"@ {entry_price} qty={quantity:.6f}"
+                    )
+                    
+                except Exception as e:
+                    logger.error(f"Failed to execute {signal.get('symbol', 'unknown')}: {e}", exc_info=True)
+                    continue
+            
+            total_invested = sum(
+                float(t['signal'].get('entry_price', 0)) * t.get('quantity', 0)
+                for t in executed_trades
+            )
+            
+            return {
+                "success": True,
+                "executed_trades": len(executed_trades),
+                "trades": executed_trades,
+                "remaining_balance": available_balance - total_invested,
+                "total_invested": total_invested
+            }
+        
+        except Exception as e:
+            logger.error(f"Error in execute_top_signals: {e}", exc_info=True)
+            return {
+                "success": False,
+                "error": str(e),
+                "executed_trades": len(executed_trades)
+            }
     
     async def close(self):
         """Закрытие соединений"""

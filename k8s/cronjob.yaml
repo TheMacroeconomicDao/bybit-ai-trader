@@ -18,8 +18,9 @@ spec:
           restartPolicy: OnFailure
           containers:
           - name: trader-agent
-            image: ghcr.io/themacroeconomicdao/bybit-ai-trader:main
+            image: ghcr.io/themacroeconomicdao/trader-agent:main
             imagePullPolicy: Always
+            command: ["python", "-m", "autonomous_agent.main"]
             env:
             # Секреты из Secret
             - name: QWEN_API_KEY

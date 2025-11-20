@@ -4,8 +4,14 @@ Publish market analysis signal to Telegram
 import asyncio
 import sys
 import aiohttp
+import json
+import os
 from typing import Optional, Any
 from pathlib import Path
+from dotenv import load_dotenv
+
+# Загрузка переменных окружения
+load_dotenv()
 
 
 async def publish_market_analysis(signal_tracker: Optional[Any] = None):
@@ -16,43 +22,83 @@ async def publish_market_analysis(signal_tracker: Optional[Any] = None):
         signal_tracker: Опциональный SignalTracker для автоматической записи сигналов при публикации
     """
     
-    # Read scan results
-    import json
-    import os
+    # Используем относительный путь от проекта
+    PROJECT_ROOT = Path(__file__).parent
+    DATA_DIR = PROJECT_ROOT / "data"
     
-    scan_files = [
-        '/Users/Gyber/.cursor/projects/Users-Gyber-GYBERNATY-ECOSYSTEM-TRADER-AGENT/agent-tools/e34a9543-45d8-4284-8944-950cf9fed9b7.txt',
-        '/Users/Gyber/.cursor/projects/Users-Gyber-GYBERNATY-ECOSYSTEM-TRADER-AGENT/agent-tools/ec2ae503-0b88-44cf-a7d3-36190d1d4f83.txt',
-        '/Users/Gyber/.cursor/projects/Users-Gyber-GYBERNATY-ECOSYSTEM-TRADER-AGENT/agent-tools/88073b9e-f5b9-47f8-b29a-aa6061436219.txt',
-    ]
+    # Читаем последние N файлов результатов сканирования
+    # Вариант 1: Автоматически находим последние файлы
+    scan_files = sorted(
+        DATA_DIR.glob("scan_results_*.json"),
+        key=lambda p: p.stat().st_mtime if p.exists() else 0,
+        reverse=True
+    )[:3]  # Последние 3 файла
+    
+    # Если файлов нет, пытаемся найти любые JSON файлы в data/
+    if not scan_files:
+        scan_files = list(DATA_DIR.glob("*.json"))[:3]
     
     all_opportunities = []
     seen_symbols = set()
     
+    # Логирование (используем print, так как loguru может быть не настроен)
+    print(f"📂 Searching for scan files in: {DATA_DIR}")
+    print(f"📄 Found {len(scan_files)} scan files")
+    
     for file_path in scan_files:
-        if os.path.exists(file_path):
-            try:
-                with open(file_path, 'r') as f:
-                    data = json.load(f)
-                    if isinstance(data, list):
-                        for item in data:
-                            symbol = item.get('symbol', '').replace('/', '')
-                            if symbol and symbol not in seen_symbols:
-                                seen_symbols.add(symbol)
-                                entry_plan = item.get('entry_plan', {})
-                                side = entry_plan.get('side', 'unknown')
-                                
-                                all_opportunities.append({
-                                    'symbol': symbol,
-                                    'side': side,
-                                    'score': item.get('score', 0),
-                                    'probability': item.get('probability', 0),
-                                    'price': item.get('current_price', 0),
-                                    'change_24h': item.get('change_24h', 0),
-                                    'entry_plan': entry_plan
-                                })
-            except Exception as e:
-                pass
+        if not file_path.exists():
+            print(f"⚠️  Scan file not found: {file_path}")
+            continue
+            
+        try:
+            with open(file_path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+                if isinstance(data, list):
+                    for item in data:
+                        symbol = item.get('symbol', '').replace('/', '')
+                        if symbol and symbol not in seen_symbols:
+                            seen_symbols.add(symbol)
+                            entry_plan = item.get('entry_plan', {})
+                            side = entry_plan.get('side', 'unknown')
+                            
+                            all_opportunities.append({
+                                'symbol': symbol,
+                                'side': side,
+                                'score': item.get('score', 0),
+                                'probability': item.get('probability', 0),
+                                'price': item.get('current_price', 0),
+                                'change_24h': item.get('change_24h', 0),
+                                'entry_plan': entry_plan
+                            })
+                elif isinstance(data, dict) and 'opportunities' in data:
+                    # Если данные в формате {"opportunities": [...]}
+                    for item in data['opportunities']:
+                        symbol = item.get('symbol', '').replace('/', '')
+                        if symbol and symbol not in seen_symbols:
+                            seen_symbols.add(symbol)
+                            entry_plan = item.get('entry_plan', {})
+                            side = entry_plan.get('side', 'unknown')
+                            
+                            all_opportunities.append({
+                                'symbol': symbol,
+                                'side': side,
+                                'score': item.get('score', 0),
+                                'probability': item.get('probability', 0),
+                                'price': item.get('current_price', 0),
+                                'change_24h': item.get('change_24h', 0),
+                                'entry_plan': entry_plan
+                            })
+        except json.JSONDecodeError as e:
+            print(f"❌ Invalid JSON in {file_path}: {e}")
+            continue
+        except Exception as e:
+            print(f"❌ Error reading {file_path}: {e}")
+            continue
+    
+    if not all_opportunities:
+        print("⚠️  No opportunities found in scan files")
+        print(f"📁 Checked directory: {DATA_DIR}")
+        print(f"📄 Files checked: {[str(f) for f in scan_files]}")
     
     # Separate LONG and SHORT
     longs = sorted([opp for opp in all_opportunities if opp['side'] == 'long'], 
@@ -173,12 +219,24 @@ async def publish_market_analysis(signal_tracker: Optional[Any] = None):
 <i>System Status: Full capacity (498 assets scanned)</i>
 <i>Next Update: Monitoring every 2-4 hours</i>"""
 
-    # Telegram bot configuration
-    BOT_TOKEN = "8003689195:AAGxQsopKvlLS34H2TZ0S1a0K7s4yV4iOBY"
+    # Telegram bot configuration from environment
+    BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+    DEFAULT_CHANNELS_STR = os.getenv("TELEGRAM_CHAT_IDS", "")
+    
+    if not BOT_TOKEN:
+        raise ValueError("TELEGRAM_BOT_TOKEN environment variable is required")
+    
+    if not DEFAULT_CHANNELS_STR:
+        raise ValueError("TELEGRAM_CHAT_IDS environment variable is required")
+    
+    # Parse chat IDs from comma-separated string
     DEFAULT_CHANNELS = [
-        "-1003382613825",  # DIAMOND HEADZH
-        "-1003484839912",  # Hypov Hedge Fund (AI Signals)
+        cid.strip() for cid in DEFAULT_CHANNELS_STR.split(",") 
+        if cid.strip()
     ]
+    
+    if not DEFAULT_CHANNELS:
+        raise ValueError("No valid chat IDs found in TELEGRAM_CHAT_IDS")
     
     # Publish to Telegram
     async def send_message(chat_id: str, text: str, parse_mode: str = "HTML"):
