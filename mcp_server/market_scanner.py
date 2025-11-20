@@ -49,19 +49,23 @@ class MarketScanner:
             btc_analysis = {}
 
         # 2. Get Account Balance for dynamic risk management
-        # КРИТИЧЕСКИ ВАЖНО: Всегда использовать реальный баланс!
+        # ВАЖНО: Balance используется для position sizing, но НЕ блокирует анализ
+        account_balance = None
         try:
             account_info = await self.client.get_account_info()
-            # Use total equity for risk calculation
             account_balance = float(account_info.get("balance", {}).get("total", 0.0))
             
             if account_balance is None or account_balance <= 0:
-                raise Exception(f"CRITICAL: Invalid account balance: {account_balance}. Cannot proceed with trading!")
-            
-            logger.info(f"✅ Account balance retrieved: ${account_balance:.2f}")
+                logger.warning(f"⚠️ Invalid account balance: {account_balance}. Position sizing will be unavailable.")
+                account_balance = None
+            else:
+                logger.info(f"✅ Account balance retrieved: ${account_balance:.2f}")
+                
         except Exception as e:
-            logger.error(f"CRITICAL: Cannot get valid wallet balance: {e}")
-            raise Exception(f"Market scan aborted: Unable to get account balance. Error: {e}")
+            logger.warning(f"⚠️ Cannot get wallet balance: {e}. Continuing without position sizing.")
+            logger.warning("   Analysis will work, but position sizes won't be calculated.")
+            account_balance = None
+            # НЕ прерываем выполнение - продолжаем анализ
             
         # 3. Get Open Positions for correlation check
         open_positions_symbols = []
@@ -859,10 +863,10 @@ class MarketScanner:
         Если None - вернёт план с предупреждением о недоступности баланса.
         """
         
-        # КРИТИЧЕСКАЯ ПРОВЕРКА: баланс не может быть None
+        # Проверка баланса - если нет, возвращаем план без position sizing
         if account_balance is None or account_balance <= 0:
-            logger.error(f"Cannot generate entry plan: invalid balance {account_balance}")
-            return None
+            logger.warning(f"⚠️ Account balance unavailable ({account_balance}). Entry plan will not include position sizing.")
+            # Продолжаем генерацию плана без position sizing
         
         current_price = ticker['price']
         h4_indicators = analysis['timeframes'].get('4h', {}).get('indicators', {})
@@ -899,30 +903,32 @@ class MarketScanner:
         risk_reward = reward_per_share / risk_per_share if risk_per_share > 0 else 0
         
         # DYNAMIC RISK MANAGEMENT
-        if account_balance is None or account_balance <= 0:
-            # Если баланс недоступен, используем placeholder с предупреждением
-            risk_usd = 0.0
-            logger.warning("⚠️ Cannot calculate risk: account balance unavailable!")
-        else:
-            risk_usd = account_balance * risk_percent
-        
-        # Рассчитываем размер позиции
-        if risk_per_share > 0:
-            qty = risk_usd / risk_per_share
-        else:
-            qty = 0
-            
-        # Округляем количество (примерно, зависит от актива, но пока float)
-        qty = round(qty, 6)
-        position_value = qty * current_price
-        
-        # Добавляем предупреждение если баланс недоступен
+        risk_usd = 0.0
+        qty = 0.0
+        position_value = 0.0
         warning = None
-        if account_balance is None or account_balance <= 0:
-            warning = "⚠️ CRITICAL: Account balance unavailable! Position size calculation is INVALID. User MUST verify balance before trading!"
-            qty = 0.0
-            position_value = 0.0
-            risk_usd = 0.0
+
+        if account_balance and account_balance > 0:
+            # Баланс доступен - рассчитываем position size
+            risk_usd = account_balance * risk_percent
+            
+            if risk_per_share > 0:
+                qty = risk_usd / risk_per_share
+            else:
+                qty = 0
+                
+            qty = round(qty, 6)
+            position_value = qty * current_price
+            
+            logger.info(f"✅ Position calculated: {qty} units = ${position_value:.2f}")
+        else:
+            # Баланс НЕ доступен - возвращаем план без sizing
+            warning = (
+                "⚠️ ВНИМАНИЕ: Account balance недоступен! "
+                "Position size НЕ рассчитан. "
+                "Это НЕ ошибка - анализ валиден, но размер позиции нужно рассчитать вручную."
+            )
+            logger.warning(warning)
         
         result = {
             "side": side,

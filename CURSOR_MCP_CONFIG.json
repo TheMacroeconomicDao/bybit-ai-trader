@@ -19,6 +19,22 @@
       "args": [
         "/Users/Gyber/GYBERNATY-ECOSYSTEM/TRADER-AGENT/mcp_server/full_server.py"
       ]
+    },
+    "autonomous-agent": {
+      "command": "/Users/Gyber/GYBERNATY-ECOSYSTEM/TRADER-AGENT/venv/bin/python",
+      "args": [
+        "/Users/Gyber/GYBERNATY-ECOSYSTEM/TRADER-AGENT/mcp_server/autonomous_agent_server.py"
+      ],
+      "env": {
+        "PYTHONPATH": "/Users/Gyber/GYBERNATY-ECOSYSTEM/TRADER-AGENT",
+        "QWEN_API_KEY": "",
+        "BYBIT_API_KEY": "V84NJog5v9bM5k6fRn",
+        "BYBIT_API_SECRET": "RYZ1JeyGsWhtjigF01rKDYzq3lRbvlxvU89L",
+        "QWEN_MODEL": "qwen/qwen-turbo",
+        "BYBIT_TESTNET": "false",
+        "TELEGRAM_BOT_TOKEN": "",
+        "TELEGRAM_CHAT_IDS": ""
+      }
     }
   }
 }

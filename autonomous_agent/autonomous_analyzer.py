@@ -432,7 +432,7 @@ class AutonomousAnalyzer:
         candidates: List[Dict[str, Any]],
         qwen_analysis: Dict[str, Any]
     ) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
-        """Финализация топ 3 лонгов и топ 3 шортов"""
+        """Финализация топ 3 лонгов и топ 3 шортов с валидацией через MCP"""
         # Фильтруем по минимальным требованиям
         filtered = [
             opp for opp in candidates
@@ -455,7 +455,12 @@ class AutonomousAnalyzer:
                 # Форматируем Qwen рекомендации
                 formatted_longs = [self._format_qwen_opportunity(opp) for opp in qwen_longs[:3]]
                 formatted_shorts = [self._format_qwen_opportunity(opp) for opp in qwen_shorts[:3]]
-                return formatted_longs, formatted_shorts
+                
+                # Валидация через MCP validate_entry
+                validated_longs = await self._validate_opportunities(formatted_longs, "long")
+                validated_shorts = await self._validate_opportunities(formatted_shorts, "short")
+                
+                return validated_longs, validated_shorts
         
         # Если Qwen не дал рекомендаций, используем наши кандидаты
         # Разделяем на лонги и шорты
@@ -474,7 +479,84 @@ class AutonomousAnalyzer:
         formatted_longs = [self._format_opportunity(opp) for opp in top_longs]
         formatted_shorts = [self._format_opportunity(opp) for opp in top_shorts]
         
-        return formatted_longs, formatted_shorts
+        # Валидация через MCP validate_entry
+        validated_longs = await self._validate_opportunities(formatted_longs, "long")
+        validated_shorts = await self._validate_opportunities(formatted_shorts, "short")
+        
+        return validated_longs, validated_shorts
+    
+    async def _validate_opportunities(
+        self,
+        opportunities: List[Dict[str, Any]],
+        side: str
+    ) -> List[Dict[str, Any]]:
+        """
+        Валидация возможностей через MCP validate_entry
+        
+        Args:
+            opportunities: Список возможностей для валидации
+            side: Направление ('long' или 'short')
+            
+        Returns:
+            Список валидированных возможностей
+        """
+        validated = []
+        
+        for opp in opportunities:
+            try:
+                symbol = opp.get("symbol", "")
+                entry_price = opp.get("entry_price", 0)
+                stop_loss = opp.get("stop_loss", 0)
+                take_profit = opp.get("take_profit", 0)
+                
+                # Проверяем что все необходимые данные есть
+                if not all([symbol, entry_price, stop_loss, take_profit]):
+                    logger.warning(f"Incomplete data for {symbol}, skipping validation")
+                    continue
+                
+                # Валидация через MCP validate_entry
+                validation = await self.technical_analysis.validate_entry(
+                    symbol=symbol,
+                    side=side,
+                    entry_price=float(entry_price),
+                    stop_loss=float(stop_loss),
+                    take_profit=float(take_profit),
+                    risk_pct=0.02  # 2% риск по умолчанию
+                )
+                
+                # Добавляем валидацию к возможности
+                opp["validation"] = validation
+                
+                # Обновляем final_score на основе валидации
+                if validation.get("is_valid", False):
+                    validation_score = validation.get("score", 0)
+                    # Комбинируем существующий score с validation score
+                    base_score = opp.get("confluence_score", 0)
+                    opp["final_score"] = min(10.0, (base_score + validation_score) / 2)
+                    opp["validation_passed"] = True
+                    validated.append(opp)
+                    logger.info(f"Validation passed for {symbol} {side}: score={validation_score}")
+                else:
+                    logger.warning(
+                        f"Validation failed for {symbol} {side}: "
+                        f"{validation.get('message', 'Unknown reason')}"
+                    )
+                    # Не добавляем в validated, но сохраняем информацию о валидации
+                    opp["validation_passed"] = False
+                    
+            except Exception as e:
+                logger.error(f"Error validating {opp.get('symbol', 'unknown')}: {e}", exc_info=True)
+                # В случае ошибки валидации, всё равно добавляем возможность
+                # но помечаем что валидация не прошла
+                opp["validation"] = {"error": str(e), "is_valid": False}
+                opp["validation_passed"] = False
+                validated.append(opp)
+        
+        # Сортируем по final_score после валидации
+        validated.sort(key=lambda x: x.get("final_score", 0), reverse=True)
+        
+        # Возвращаем топ-3
+        return validated[:3]
     
     def _format_qwen_opportunity(self, qwen_opp: Dict[str, Any]) -> Dict[str, Any]:
         """Форматирование возможности от Qwen"""

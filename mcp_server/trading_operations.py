@@ -18,6 +18,66 @@ import uuid
 import aiohttp
 
 
+def handle_bybit_error(response: Dict[str, Any], operation: str = "API call") -> None:
+    """
+    Обрабатывает ошибки Bybit API и выбрасывает понятные исключения.
+    
+    Args:
+        response: Ответ от Bybit API
+        operation: Описание операции для сообщения об ошибке
+    
+    Raises:
+        Exception: С понятным сообщением об ошибке
+    """
+    ret_code = response.get("retCode")
+    ret_msg = response.get("retMsg", "Unknown error")
+    
+    if ret_code == 0:
+        return  # Успех
+    
+    # Специфичные ошибки Bybit API
+    error_messages = {
+        10003: (
+            "❌ API Key INVALID (retCode=10003)\n"
+            "Причина: API ключ невалидный или истек\n"
+            "Решение: Проверьте BYBIT_API_KEY в GitHub Secrets:\n"
+            "  1. Зайдите на Bybit → API Management\n"
+            "  2. Убедитесь что ключ активен\n"
+            "  3. Обновите его в GitHub Secrets если истек"
+        ),
+        10004: (
+            "❌ API Key has NO PERMISSIONS (retCode=10004)\n"
+            "Причина: У API ключа нет прав для этой операции\n"
+            "Решение: На Bybit → API Management включите:\n"
+            "  • Read permissions (для анализа)\n"
+            "  • Trade permissions (для торговли)"
+        ),
+        10005: (
+            "❌ IP NOT WHITELISTED (retCode=10005)\n"
+            "Причина: IP адрес сервера не в whitelist\n"
+            "Решение:\n"
+            "  1. Узнайте IP вашего Kubernetes кластера\n"
+            "  2. Добавьте его в Bybit → API Management → IP Whitelist"
+        ),
+        10006: (
+            "❌ TIMESTAMP ERROR (retCode=10006)\n"
+            "Причина: Время на сервере не синхронизировано\n"
+            "Решение: Проверьте системное время сервера (NTP sync)"
+        ),
+        10016: (
+            "❌ SERVICE UNAVAILABLE (retCode=10016)\n"
+            "Причина: Bybit API временно недоступен\n"
+            "Решение: Подождите и повторите запрос"
+        ),
+    }
+    
+    if ret_code in error_messages:
+        error_detail = error_messages[ret_code]
+        raise Exception(f"{operation} failed:\n{error_detail}\n\nOriginal error: {ret_msg}")
+    else:
+        raise Exception(f"{operation} failed: {ret_msg} (retCode={ret_code})")
+
+
 class BalanceCache:
     """
     Кэш для балансов счетов с TTL (Time To Live)
@@ -219,7 +279,11 @@ def get_all_account_balances(
                 coin=coin
             )
             
-            if wallet_response.get("retCode") == 0:
+            # Проверка ошибок API с детальными сообщениями
+            handle_bybit_error(wallet_response, f"Get wallet balance for {account_type}")
+            
+            # Если дошли сюда - retCode = 0, продолжаем
+            if True:  # wallet_response.get("retCode") == 0:
                 wallet_data = wallet_response.get("result", {}).get("list", [{}])
                 
                 if wallet_data:

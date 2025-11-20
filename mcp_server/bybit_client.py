@@ -15,12 +15,55 @@ import ccxt.async_support as ccxt
 import aiohttp
 from aiohttp import ClientTimeout, TCPConnector
 from loguru import logger
+import json
+import re
 
 # Условный импорт для поддержки как пакета, так и прямого запуска
 try:
     from .cache_manager import get_cache_manager
 except ImportError:
     from cache_manager import get_cache_manager
+
+
+def parse_ccxt_error(error: Exception) -> Dict[str, Any]:
+    """
+    Парсит ошибки CCXT, которые могут содержать JSON строки вида:
+    'bybit {"retCode":10003,"retMsg":"API key is invalid.",...}'
+    
+    Returns:
+        {
+            "retCode": int or None,
+            "retMsg": str,
+            "parsed": bool,
+            "original_error": str
+        }
+    """
+    error_str = str(error)
+    
+    # Ищем JSON в строке ошибки (формат: "bybit {...}" или просто "{...}")
+    json_match = re.search(r'\{[^{}]*"retCode"[^{}]*\}', error_str)
+    
+    if json_match:
+        try:
+            json_str = json_match.group(0)
+            error_data = json.loads(json_str)
+            
+            return {
+                "retCode": error_data.get("retCode"),
+                "retMsg": error_data.get("retMsg", "Unknown error"),
+                "parsed": True,
+                "original_error": error_str
+            }
+        except (json.JSONDecodeError, KeyError) as e:
+            logger.debug(f"Failed to parse JSON from error: {e}")
+    
+    # Если не нашли JSON, возвращаем оригинальную ошибку
+    return {
+        "retCode": None,
+        "retMsg": error_str,
+        "parsed": False,
+        "original_error": error_str
+    }
 
 
 class BybitClient:
@@ -64,6 +107,83 @@ class BybitClient:
         self._http_session: Optional[aiohttp.ClientSession] = None
         
         logger.info(f"Bybit client initialized ({'testnet' if testnet else 'mainnet'})")
+    
+    async def validate_api_credentials(self) -> Dict[str, Any]:
+        """
+        Валидация API credentials при старте системы.
+        
+        Returns:
+            {
+                "valid": bool,
+                "permissions": List[str],  # ["READ", "WRITE"] или ошибка
+                "accounts": List[str],     # Доступные типы счетов
+                "error": Optional[str]
+            }
+        
+        Raises:
+            Exception: Если API ключи невалидные (fail-fast)
+        """
+        logger.info("🔍 Validating Bybit API credentials...")
+        
+        try:
+            # Простой тест: получаем server time (не требует auth)
+            test_ticker = await self.exchange.fetch_ticker('BTC/USDT')
+            if not test_ticker:
+                raise Exception("API не вернул данные для BTC/USDT")
+            
+            logger.info("✅ API доступен (public endpoints)")
+            
+            # Тест authenticated endpoint: get account balance
+            try:
+                balance = await self.exchange.fetch_balance()
+                logger.info("✅ API Key валиден (authenticated endpoints работают)")
+                
+                # Проверяем какие балансы доступны
+                available_accounts = []
+                if balance.get('free'):
+                    available_accounts.append("SPOT")
+                if balance.get('total'):
+                    available_accounts.append("UNIFIED")
+                
+                return {
+                    "valid": True,
+                    "permissions": ["READ", "WRITE"],
+                    "accounts": available_accounts,
+                    "error": None
+                }
+                
+            except Exception as auth_error:
+                error_msg = str(auth_error)
+                
+                # Проверяем специфичные ошибки
+                if "10003" in error_msg or "invalid" in error_msg.lower():
+                    logger.error("❌ API Key INVALID (retCode 10003)")
+                    raise Exception(
+                        "Bybit API Key is INVALID! "
+                        "Please check your BYBIT_API_KEY and BYBIT_API_SECRET in GitHub Secrets. "
+                        f"Error: {error_msg}"
+                    )
+                elif "10004" in error_msg or "permission" in error_msg.lower():
+                    logger.error("❌ API Key has NO PERMISSIONS (retCode 10004)")
+                    raise Exception(
+                        "Bybit API Key has insufficient permissions! "
+                        "Please enable READ permissions on Bybit API Management page. "
+                        f"Error: {error_msg}"
+                    )
+                elif "10005" in error_msg or "ip" in error_msg.lower():
+                    logger.error("❌ IP NOT WHITELISTED (retCode 10005)")
+                    raise Exception(
+                        "IP address is not whitelisted! "
+                        "Please add your server's IP to Bybit API whitelist. "
+                        f"Error: {error_msg}"
+                    )
+                else:
+                    logger.error(f"❌ API authentication failed: {error_msg}")
+                    raise Exception(f"Bybit API authentication failed: {error_msg}")
+                    
+        except Exception as e:
+            logger.error(f"❌ API validation failed: {e}")
+            raise
     
     async def _get_http_session(self) -> aiohttp.ClientSession:
         """Получить или создать aiohttp сессию с улучшенными настройками DNS"""
@@ -448,7 +568,39 @@ class BybitClient:
                 }
                 
             except Exception as e:
+                # Парсим ошибку CCXT для извлечения retCode
+                parsed_error = parse_ccxt_error(e)
                 error_msg = str(e).lower()
+                
+                # Если нашли retCode в ошибке - обрабатываем специфично
+                if parsed_error["parsed"] and parsed_error["retCode"]:
+                    ret_code = parsed_error["retCode"]
+                    ret_msg = parsed_error["retMsg"]
+                    
+                    if ret_code == 10003:
+                        logger.error(f"❌ API Key INVALID (retCode=10003) for {symbol}")
+                        raise Exception(
+                            f"Bybit API Key is INVALID! "
+                            f"Please check your BYBIT_API_KEY and BYBIT_API_SECRET. "
+                            f"Error: {ret_msg}"
+                        )
+                    elif ret_code == 10004:
+                        logger.error(f"❌ API Key has NO PERMISSIONS (retCode=10004) for {symbol}")
+                        raise Exception(
+                            f"Bybit API Key has insufficient permissions! "
+                            f"Please enable READ permissions on Bybit API Management page. "
+                            f"Error: {ret_msg}"
+                        )
+                    elif ret_code == 10005:
+                        logger.error(f"❌ IP NOT WHITELISTED (retCode=10005) for {symbol}")
+                        raise Exception(
+                            f"IP address is not whitelisted! "
+                            f"Please add your server's IP to Bybit API whitelist. "
+                            f"Error: {ret_msg}"
+                        )
+                    else:
+                        logger.error(f"Bybit API error (retCode={ret_code}) for {symbol}: {ret_msg}")
+                        raise Exception(f"Bybit API error (retCode={ret_code}): {ret_msg}")
                 
                 # Проверяем на DNS ошибки
                 if any(keyword in error_msg for keyword in ["dns", "could not contact dns", "name resolution", "gaierror", "cannot connect to host"]):
@@ -831,6 +983,24 @@ class BybitClient:
             }
             
         except Exception as e:
+            # Парсим ошибку CCXT для извлечения retCode
+            parsed_error = parse_ccxt_error(e)
+            
+            if parsed_error["parsed"] and parsed_error["retCode"]:
+                ret_code = parsed_error["retCode"]
+                ret_msg = parsed_error["retMsg"]
+                
+                if ret_code == 10003:
+                    logger.error(f"❌ API Key INVALID (retCode=10003) when getting account info")
+                    raise Exception(
+                        f"Bybit API Key is INVALID! "
+                        f"Please check your BYBIT_API_KEY and BYBIT_API_SECRET. "
+                        f"Error: {ret_msg}"
+                    )
+                else:
+                    logger.error(f"Bybit API error (retCode={ret_code}) when getting account info: {ret_msg}")
+                    raise Exception(f"Bybit API error (retCode={ret_code}): {ret_msg}")
+            
             logger.error(f"Error getting account info: {e}", exc_info=True)
             raise
     
@@ -1252,8 +1422,25 @@ class BybitClient:
             trades = await self.exchange.fetch_trades(symbol, limit=limit)
             return trades
         except Exception as e:
+            # Парсим ошибку CCXT для извлечения retCode
+            parsed_error = parse_ccxt_error(e)
+            
+            if parsed_error["parsed"] and parsed_error["retCode"]:
+                ret_code = parsed_error["retCode"]
+                ret_msg = parsed_error["retMsg"]
+                
+                if ret_code == 10003:
+                    logger.error(f"❌ API Key INVALID (retCode=10003) when getting public trades for {symbol}")
+                    raise Exception(
+                        f"Bybit API Key is INVALID! "
+                        f"Please check your BYBIT_API_KEY and BYBIT_API_SECRET. "
+                        f"Error: {ret_msg}"
+                    )
+                else:
+                    logger.error(f"Bybit API error (retCode={ret_code}) when getting public trades: {ret_msg}")
+                    raise Exception(f"Bybit API error (retCode={ret_code}): {ret_msg}")
+            
             logger.error(f"Error getting public trades: {e}")
-            # Fallback logic or re-raise
             raise
 
     async def close(self):

@@ -6,6 +6,7 @@ Complete Bybit Trading MCP Server
 
 import asyncio
 import json
+import os
 import sys
 import traceback
 from pathlib import Path
@@ -68,18 +69,105 @@ signal_reports: Optional[SignalReports] = None
 
 
 def load_credentials() -> Dict[str, Any]:
-    """Загрузка credentials"""
+    """
+    Загрузка credentials с приоритетом:
+    1. Environment Variables (GitHub Secrets → Kubernetes) - ПРИОРИТЕТ!
+    2. credentials.json (fallback для локальной разработки)
+    
+    Raises:
+        ValueError: Если API ключи невалидные или отсутствуют
+    """
+    # ============================================
+    # ПРИОРИТЕТ #1: Environment Variables (Production)
+    # ============================================
+    bybit_api_key_raw = os.getenv("BYBIT_API_KEY")
+    bybit_api_secret_raw = os.getenv("BYBIT_API_SECRET")
+    bybit_testnet = os.getenv("BYBIT_TESTNET", "false").lower() == "true"
+    
+    logger.info("🔍 Loading Bybit credentials...")
+    
+    # КРИТИЧНО: Убираем пробелы и переносы строк (частая проблема при копировании из GitHub Secrets)
+    bybit_api_key = bybit_api_key_raw.strip() if bybit_api_key_raw else None
+    bybit_api_secret = bybit_api_secret_raw.strip() if bybit_api_secret_raw else None
+    
+    # Если нашли в ENV - используем их (Production режим)
+    if bybit_api_key and bybit_api_secret:
+        logger.info("✅ Found credentials in ENVIRONMENT VARIABLES (Production mode)")
+        logger.info(f"   Mode: {'🧪 TESTNET' if bybit_testnet else '🚀 MAINNET'}")
+        logger.info(f"   API Key length: {len(bybit_api_key)} chars")
+        logger.info(f"   API Secret length: {len(bybit_api_secret)} chars")
+        logger.info(f"   API Key preview: {bybit_api_key[:8]}...{bybit_api_key[-4:]}")
+        
+        # Проверка на пустые строки после strip
+        if not bybit_api_key or not bybit_api_secret:
+            raise ValueError(
+                "Bybit API credentials are empty after trimming whitespace! "
+                "Please check GitHub Secrets - they may contain only spaces."
+            )
+        
+        # ВАЛИДАЦИЯ длины
+        if len(bybit_api_key) < 10 or len(bybit_api_secret) < 10:
+            raise ValueError(
+                f"Bybit API credentials are too short! "
+                f"API Key: {len(bybit_api_key)} chars, Secret: {len(bybit_api_secret)} chars. "
+                f"This likely means they are invalid or placeholder values."
+            )
+        
+        # Проверка на наличие пробелов внутри ключа (не должно быть)
+        if ' ' in bybit_api_key or '\n' in bybit_api_key:
+            logger.warning("⚠️ WARNING: API Key contains spaces or newlines - this may cause issues!")
+        if ' ' in bybit_api_secret or '\n' in bybit_api_secret:
+            logger.warning("⚠️ WARNING: API Secret contains spaces or newlines - this may cause issues!")
+        
+        return {
+            "bybit": {
+                "api_key": bybit_api_key,
+                "api_secret": bybit_api_secret,
+                "testnet": bybit_testnet
+            }
+        }
+    
+    # ============================================
+    # ПРИОРИТЕТ #2: credentials.json (Local Development)
+    # ============================================
+    logger.warning("⚠️ BYBIT credentials not found in ENV, trying credentials.json (Local mode)")
     config_path = Path(__file__).parent.parent / "config" / "credentials.json"
     
     try:
         with open(config_path, 'r') as f:
-            return json.load(f)
+            file_creds = json.load(f)
+            
+            bybit_api_key_raw = file_creds["bybit"]["api_key"]
+            bybit_api_secret_raw = file_creds["bybit"]["api_secret"]
+            bybit_testnet = file_creds["bybit"].get("testnet", False)
+            
+            # КРИТИЧНО: Убираем пробелы и переносы строк
+            bybit_api_key = bybit_api_key_raw.strip() if bybit_api_key_raw else None
+            bybit_api_secret = bybit_api_secret_raw.strip() if bybit_api_secret_raw else None
+            
+            logger.info("✅ Found credentials in credentials.json (Local mode)")
+            logger.info(f"   Mode: {'🧪 TESTNET' if bybit_testnet else '🚀 MAINNET'}")
+            logger.info(f"   API Key length: {len(bybit_api_key)} chars")
+            logger.info(f"   API Secret length: {len(bybit_api_secret)} chars")
+            
+            return {
+                "bybit": {
+                    "api_key": bybit_api_key,
+                    "api_secret": bybit_api_secret,
+                    "testnet": bybit_testnet
+                }
+            }
+            
     except FileNotFoundError:
-        logger.error(f"Credentials not found: {config_path}")
-        raise
-    except JSONDecodeError as e:
-        logger.error(f"Invalid JSON: {e}")
-        raise
+        logger.error(f"❌ Credentials not found: {config_path}")
+        raise ValueError(
+            "No Bybit credentials found!\n"
+            "For PRODUCTION: Set BYBIT_API_KEY and BYBIT_API_SECRET environment variables\n"
+            "For LOCAL: Create config/credentials.json"
+        )
+    except (JSONDecodeError, KeyError) as e:
+        logger.error(f"❌ Invalid credentials.json: {e}")
+        raise ValueError(f"Invalid credentials.json format: {e}")
 
 
 @app.list_tools()
@@ -662,7 +750,15 @@ async def call_tool(name: str, arguments: Any) -> List[TextContent]:
             )
         
         elif name == "get_asset_price":
-            result = await bybit_client.get_asset_price(arguments["symbol"])
+            try:
+                result = await bybit_client.get_asset_price(arguments["symbol"])
+            except Exception as e:
+                logger.error(f"Error in get_asset_price: {e}", exc_info=True)
+                result = {
+                    "success": False,
+                    "error": str(e),
+                    "symbol": arguments.get("symbol", "unknown")
+                }
         
         # ═══ Технический анализ ═══
         elif name == "analyze_asset":
@@ -1397,6 +1493,31 @@ async def main():
     credentials = load_credentials()
     bybit_creds = credentials["bybit"]
     
+    # === ВАЛИДАЦИЯ API КЛЮЧЕЙ ===
+    logger.info("=" * 50)
+    logger.info("🔍 VALIDATING BYBIT API CREDENTIALS...")
+    logger.info("=" * 50)
+    
+    bybit_api_key = bybit_creds["api_key"]
+    bybit_api_secret = bybit_creds["api_secret"]
+    
+    # Проверка на placeholder значения
+    if bybit_api_key == "your_api_key_here" or bybit_api_secret == "your_api_secret_here":
+        logger.error("❌ CRITICAL: API credentials are placeholder values!")
+        logger.error("   Please set real API keys in GitHub Secrets or credentials.json")
+        raise ValueError("Invalid API credentials: placeholder values detected")
+    
+    # Проверка минимальной длины
+    if len(bybit_api_key) < 10 or len(bybit_api_secret) < 10:
+        logger.error("❌ CRITICAL: API credentials are too short!")
+        logger.error(f"   API Key length: {len(bybit_api_key)}")
+        logger.error(f"   API Secret length: {len(bybit_api_secret)}")
+        raise ValueError("Invalid API credentials: too short")
+    
+    logger.info("✅ API credentials format validation passed")
+    logger.info(f"   Source: {'ENVIRONMENT VARIABLES' if os.getenv('BYBIT_API_KEY') else 'credentials.json'}")
+    logger.info("=" * 50)
+    
     # Инициализация всех компонентов
     logger.info("Initializing components...")
     
@@ -1411,6 +1532,43 @@ async def main():
         api_secret=bybit_creds["api_secret"],
         testnet=bybit_creds.get("testnet", False)
     )
+    
+    # === КРИТИЧЕСКАЯ ВАЛИДАЦИЯ API ПРИ СТАРТЕ ===
+    logger.info("=" * 50)
+    logger.info("🔍 TESTING BYBIT API CONNECTION...")
+    logger.info("=" * 50)
+    
+    try:
+        api_health = await bybit_client.validate_api_credentials()
+        
+        if api_health["valid"]:
+            logger.info("✅ API VALIDATION SUCCESSFUL")
+            logger.info(f"   Permissions: {', '.join(api_health['permissions'])}")
+            logger.info(f"   Available accounts: {', '.join(api_health.get('accounts', []))}")
+        else:
+            logger.error("❌ API VALIDATION FAILED")
+            logger.error(f"   Error: {api_health.get('error', 'Unknown')}")
+            raise Exception("API validation failed - cannot start server")
+            
+    except Exception as e:
+        logger.error("=" * 50)
+        logger.error("❌ CRITICAL: API VALIDATION FAILED")
+        logger.error("=" * 50)
+        logger.error(f"Error: {e}")
+        logger.error("")
+        logger.error("Server startup ABORTED. Please fix API credentials and restart.")
+        logger.error("")
+        logger.error("Quick check:")
+        logger.error("1. Are GitHub Secrets set correctly? (BYBIT_API_KEY, BYBIT_API_SECRET)")
+        logger.error("2. Is API key valid on Bybit?")
+        logger.error("3. Does API key have READ permissions?")
+        logger.error("4. Is your server IP whitelisted on Bybit?")
+        logger.error("=" * 50)
+        sys.exit(1)  # FAIL-FAST: Прерываем запуск если API невалиден
+    
+    logger.info("=" * 50)
+    logger.info("✅ ALL PRE-FLIGHT CHECKS PASSED")
+    logger.info("=" * 50)
     
     technical_analysis = TechnicalAnalysis(bybit_client)
     market_scanner = MarketScanner(bybit_client, technical_analysis)
