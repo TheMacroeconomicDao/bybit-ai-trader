@@ -60,3 +60,4 @@ echo ""
 echo -e "${YELLOW}📝 Проверить логи: tail -f $PROJECT_DIR/logs/cron.log${NC}"
 echo -e "${YELLOW}🔄 Изменить расписание: $0 \"0 */2 * * *\"${NC}"
 
+
