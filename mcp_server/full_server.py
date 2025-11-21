@@ -21,7 +21,7 @@ if str(_mcp_server_path) not in sys.path:
 import pandas as pd
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
-from mcp.types import Tool, TextContent
+from mcp.types import Tool, TextContent, Resource, TextResourceContents, Prompt, PromptMessage, GetPromptResult
 from loguru import logger
 
 # Загрузка переменных окружения из .env файла (ПОСЛЕ импорта logger)
@@ -1504,6 +1504,145 @@ async def call_tool(name: str, arguments: Any) -> List[TextContent]:
         )]
 
 
+@app.list_resources()
+async def list_resources() -> List[Resource]:
+    """Список всех промптов и базы знаний"""
+    
+    base_path = Path(__file__).parent.parent
+    resources = []
+    
+    # Промпты из папки prompts/
+    prompts_dir = base_path / "prompts"
+    if prompts_dir.exists():
+        for prompt_file in prompts_dir.glob("*.md"):
+            resources.append(Resource(
+                uri=f"prompt:///{prompt_file.stem}",
+                name=prompt_file.stem,
+                description=f"Trading prompt: {prompt_file.stem}",
+                mimeType="text/markdown"
+            ))
+    
+    # База знаний из папки knowledge_base/
+    kb_dir = base_path / "knowledge_base"
+    if kb_dir.exists():
+        for kb_file in kb_dir.glob("*.md"):
+            resources.append(Resource(
+                uri=f"knowledge:///{kb_file.stem}",
+                name=kb_file.stem,
+                description=f"Trading knowledge: {kb_file.stem}",
+                mimeType="text/markdown"
+            ))
+    
+    logger.info(f"Listed {len(resources)} resources ({len(list(prompts_dir.glob('*.md'))) if prompts_dir.exists() else 0} prompts, {len(list(kb_dir.glob('*.md'))) if kb_dir.exists() else 0} knowledge)")
+    return resources
+
+
+@app.read_resource()
+async def read_resource(uri: str) -> TextResourceContents:
+    """Чтение промпта или базы знаний"""
+    
+    base_path = Path(__file__).parent.parent
+    
+    try:
+        if uri.startswith("prompt:///"):
+            # Читаем промпт
+            prompt_name = uri.replace("prompt:///", "")
+            prompt_file = base_path / "prompts" / f"{prompt_name}.md"
+            
+            if not prompt_file.exists():
+                raise ValueError(f"Prompt not found: {prompt_name}")
+            
+            content = prompt_file.read_text(encoding="utf-8")
+            logger.info(f"Read prompt: {prompt_name} ({len(content)} chars)")
+            
+            return TextResourceContents(
+                uri=uri,
+                mimeType="text/markdown",
+                text=content
+            )
+        
+        elif uri.startswith("knowledge:///"):
+            # Читаем базу знаний
+            kb_name = uri.replace("knowledge:///", "")
+            kb_file = base_path / "knowledge_base" / f"{kb_name}.md"
+            
+            if not kb_file.exists():
+                raise ValueError(f"Knowledge base not found: {kb_name}")
+            
+            content = kb_file.read_text(encoding="utf-8")
+            logger.info(f"Read knowledge: {kb_name} ({len(content)} chars)")
+            
+            return TextResourceContents(
+                uri=uri,
+                mimeType="text/markdown",
+                text=content
+            )
+        
+        else:
+            raise ValueError(f"Unknown resource URI: {uri}")
+    
+    except Exception as e:
+        logger.error(f"Error reading resource {uri}: {e}")
+        raise
+
+
+@app.list_prompts()
+async def list_prompts() -> List[Prompt]:
+    """Список всех доступных промптов"""
+    
+    base_path = Path(__file__).parent.parent
+    prompts_dir = base_path / "prompts"
+    prompts = []
+    
+    if prompts_dir.exists():
+        for prompt_file in prompts_dir.glob("*.md"):
+            # Читаем первые строки для описания
+            try:
+                content = prompt_file.read_text(encoding="utf-8")
+                # Берем первую строку или первый параграф как описание
+                description = content.split('\n')[0].strip('# ').strip()
+                if not description:
+                    description = f"Trading prompt: {prompt_file.stem}"
+            except:
+                description = f"Trading prompt: {prompt_file.stem}"
+            
+            prompts.append(Prompt(
+                name=prompt_file.stem,
+                description=description,
+                arguments=[]  # Промпты без аргументов (статические)
+            ))
+    
+    logger.info(f"Listed {len(prompts)} prompts")
+    return prompts
+
+
+@app.get_prompt()
+async def get_prompt(name: str, arguments: dict[str, str] | None = None) -> GetPromptResult:
+    """Получить содержимое промпта"""
+    
+    base_path = Path(__file__).parent.parent
+    prompt_file = base_path / "prompts" / f"{name}.md"
+    
+    if not prompt_file.exists():
+        raise ValueError(f"Prompt not found: {name}")
+    
+    content = prompt_file.read_text(encoding="utf-8")
+    logger.info(f"Read prompt: {name} ({len(content)} chars)")
+    
+    return GetPromptResult(
+        description=f"Trading prompt: {name}",
+        messages=[
+            PromptMessage(
+                role="user",
+                content=TextContent(
+                    type="text",
+                    text=content
+                )
+            )
+        ]
+    )
+
+
 async def main():
     """Запуск полного trading сервера"""
     global trading_ops, technical_analysis, market_scanner, position_monitor, bybit_client
@@ -1616,8 +1755,13 @@ async def main():
     
     logger.info("✅ All components initialized")
     logger.info("=" * 50)
+    # Подсчет ресурсов для логирования
+    resources = await list_resources()
+    prompts_count = sum(1 for r in resources if str(r.uri).startswith("prompt:///"))
+    knowledge_count = sum(1 for r in resources if str(r.uri).startswith("knowledge:///"))
+    
     logger.info("Server ready for connections")
-    logger.info("Available tools: 35")
+    logger.info(f"Available tools: 35, prompts: {prompts_count}, resources: {len(resources)}")
     logger.info("=" * 50)
     logger.info("Tools breakdown:")
     logger.info("  - Market Data: 3")

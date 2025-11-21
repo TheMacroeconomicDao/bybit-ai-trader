@@ -525,39 +525,235 @@ class AutonomousAnalyzer:
         analysis: Dict,
         validation: Optional[Dict]
     ) -> float:
-        """Расчёт финального score"""
-        base_score = opp.get("score", 5.0)
+        """
+        Расчёт финального score на основе Entry Decision Framework
         
-        # Бонус за composite signal
-        composite = analysis.get("composite_signal", {})
-        signal = composite.get("signal", "HOLD")
-        if signal == "STRONG_BUY":
-            base_score += 1.0
-        elif signal == "BUY":
-            base_score += 0.5
+        CONFLUENCE SCORING MATRIX (из entry_decision_framework.md):
+        1. Trend Alignment (3-4 TF): 0-2 points
+        2. Multiple Indicators (5+): 0-2 points
+        3. Strong S/R Level: 0-1 point
+        4. Volume Confirmation: 0-1 point
+        5. Pattern >70% Reliability: 0-1 point
+        6. R:R ≥ 1:2: 0-1 point
+        7. Favorable Market Conditions: 0-1 point
+        8. BTC Supports Direction: 0-1 point
+        9. Positive Sentiment: 0-1 point
+        10. On-Chain Supports: 0-1 point (BONUS)
         
-        # Бонус за confidence
-        confidence = composite.get("confidence", 0.5)
-        base_score += (confidence - 0.5) * 2
+        МИНИМУМ ДЛЯ ВХОДА: 8.0 points
+        """
+        
+        score = 0.0
+        side = opp.get("side", "long").lower()
+        
+        # 1. Trend Alignment (0-2 points)
+        if analysis:
+            timeframes = analysis.get("timeframes", {})
+            aligned_tfs = 0
+            
+            for tf_data in timeframes.values():
+                trend = tf_data.get("trend", {})
+                direction = trend.get("direction", "").lower()
+                
+                if side == "long":
+                    if direction in ["uptrend", "bullish", "rising"]:
+                        aligned_tfs += 1
+                else:  # short
+                    if direction in ["downtrend", "bearish", "falling"]:
+                        aligned_tfs += 1
+            
+            if aligned_tfs >= 4:
+                score += 2.0  # Все 4 TF aligned
+            elif aligned_tfs == 3:
+                score += 1.5
+            elif aligned_tfs == 2:
+                score += 1.0
+        
+        # 2. Multiple Indicators (0-2 points)
+        confirmed_indicators = 0
+        if analysis:
+            for tf_data in timeframes.values():
+                indicators = tf_data.get("indicators", {})
+                
+                # RSI
+                rsi = indicators.get("rsi", {})
+                rsi_value = rsi.get("rsi_14", 50)
+                if side == "long" and rsi_value < 35:
+                    confirmed_indicators += 1
+                elif side == "short" and rsi_value > 65:
+                    confirmed_indicators += 1
+                
+                # MACD
+                macd = indicators.get("macd", {})
+                histogram = macd.get("histogram", 0)
+                if side == "long" and histogram > 0:
+                    confirmed_indicators += 1
+                elif side == "short" and histogram < 0:
+                    confirmed_indicators += 1
+                
+                # Bollinger Bands
+                bb = indicators.get("bollinger_bands", {})
+                bb_position = bb.get("position", "middle")
+                if side == "long" and bb_position == "lower":
+                    confirmed_indicators += 1
+                elif side == "short" and bb_position == "upper":
+                    confirmed_indicators += 1
+        
+        # Также проверяем общий счетчик если есть
+        confirmed_indicators = max(
+            confirmed_indicators,
+            opp.get("confirmed_indicators_count", 0)
+        )
+        
+        if confirmed_indicators >= 7:
+            score += 2.0
+        elif confirmed_indicators >= 6:
+            score += 1.5
+        elif confirmed_indicators >= 5:
+            score += 1.0
+        elif confirmed_indicators >= 4:
+            score += 0.5
+        
+        # 3. Strong S/R Level (0-1 point)
+        sr_levels = opp.get("support_resistance", {})
+        has_strong_level = False
+        
+        if side == "long":
+            support = sr_levels.get("support", [])
+            entry_price = opp.get("entry_price", 0)
+            for level in support:
+                if entry_price > 0 and abs(entry_price - level) / entry_price < 0.02:
+                    has_strong_level = True
+                    break
+        else:  # short
+            resistance = sr_levels.get("resistance", [])
+            entry_price = opp.get("entry_price", 0)
+            for level in resistance:
+                if entry_price > 0 and abs(entry_price - level) / entry_price < 0.02:
+                    has_strong_level = True
+                    break
+        
+        if has_strong_level or opp.get("near_support", False) or opp.get("near_resistance", False):
+            score += 1.0
+        
+        # 4. Volume Confirmation (0-1 point)
+        volume_ratio = opp.get("volume_ratio", 1.0)
+        if volume_ratio >= 2.0:
+            score += 1.0
+        elif volume_ratio >= 1.5:
+            score += 0.75
+        elif volume_ratio >= 1.3:
+            score += 0.5
+        
+        # 5. Pattern Reliability (0-1 point)
+        pattern_success = opp.get("pattern_success_rate", 0)
+        if pattern_success == 0:
+            patterns = analysis.get("patterns", [])
+            if patterns:
+                pattern_success = max(
+                    p.get("reliability", 0) / 100.0 if isinstance(p.get("reliability"), (int, float)) else 0
+                    for p in patterns
+                    if isinstance(p, dict)
+                )
+        
+        if pattern_success > 0.75:
+            score += 1.0
+        elif pattern_success > 0.70:
+            score += 0.75
+        elif pattern_success > 0.65:
+            score += 0.5
+        elif pattern_success > 0.60:
+            score += 0.25
+        
+        # 6. R:R Ratio (0-1 point)
+        rr_ratio = opp.get("risk_reward", 0)
+        if rr_ratio == 0:
+            # Рассчитываем из entry, stop_loss, take_profit
+            entry = opp.get("entry_price", 0)
+            stop_loss = opp.get("stop_loss", 0)
+            take_profit = opp.get("take_profit", 0)
+            
+            if entry > 0 and stop_loss > 0 and take_profit > 0:
+                if side == "long":
+                    risk = abs(entry - stop_loss)
+                    reward = abs(take_profit - entry)
+                else:  # short
+                    risk = abs(stop_loss - entry)
+                    reward = abs(entry - take_profit)
+                
+                if risk > 0:
+                    rr_ratio = reward / risk
+        
+        if rr_ratio >= 3.0:
+            score += 1.0
+        elif rr_ratio >= 2.5:
+            score += 0.75
+        elif rr_ratio >= 2.0:
+            score += 0.5
+        
+        # 7. Market Conditions (0-1 point)
+        market_conditions = opp.get("market_conditions", {})
+        volatility = market_conditions.get("volatility", "normal")
+        trend_strength = market_conditions.get("trend_strength", "medium")
+        
+        if volatility in ["normal", "low"] and trend_strength in ["strong", "medium"]:
+            score += 1.0
+        elif volatility in ["normal"] and trend_strength in ["medium"]:
+            score += 0.75
+        elif volatility in ["normal", "low"]:
+            score += 0.5
+        
+        # 8. BTC Support (0-1 point)
+        btc_status = opp.get("btc_status", "neutral").lower()
+        btc_trend = opp.get("btc_trend", "neutral").lower()
+        
+        if side == "long":
+            if btc_status in ["bullish"] or btc_trend in ["bullish"]:
+                score += 1.0
+            elif btc_status in ["neutral"] or btc_trend in ["neutral"]:
+                score += 0.75
+        else:  # short
+            if btc_status in ["bearish"] or btc_trend in ["bearish"]:
+                score += 1.0
+            elif btc_status in ["neutral"] or btc_trend in ["neutral"]:
+                score += 0.75
+        
+        # 9. Sentiment (0-1 point)
+        sentiment = opp.get("sentiment", "neutral").lower()
+        if sentiment == "positive":
+            score += 1.0
+        elif sentiment == "neutral":
+            score += 0.5
+        
+        # 10. On-Chain Support (0-1 point BONUS)
+        onchain = opp.get("onchain_support", False)
+        if onchain:
+            score += 1.0
         
         # Бонус за validation
         if validation and validation.get("is_valid", False):
-            base_score += 1.0
+            validation_score = validation.get("score", 0)
+            # Небольшой бонус (максимум +0.5)
+            score += min(0.5, validation_score / 20.0)
         
-        return min(10.0, max(0.0, base_score))
+        # Округляем до 0.5
+        score = round(score * 2) / 2
+        
+        return min(12.0, max(0.0, score))
     
     async def _finalize_top_3_longs_and_shorts(
         self,
         candidates: List[Dict[str, Any]],
         qwen_analysis: Dict[str, Any]
     ) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
-        """Финализация топ 3 лонгов и топ 3 шортов с валидацией через MCP"""
-        # Фильтруем по минимальным требованиям
-        filtered = [
-            opp for opp in candidates
-            if opp.get("final_score", 0) >= 8.0
-            and opp.get("probability", 0) >= 0.70
-        ]
+        """
+        Финализация ТОП 3 лонгов и ТОП 3 шортов
+        
+        КРИТИЧЕСКИ ВАЖНО (из CRITICAL_REQUIREMENTS.md):
+        - ВСЕГДА возвращать ОБА направления
+        - Даже если score низкий - показывать с предупреждением
+        - НЕ фильтровать по направлению до финального отчета
+        """
         
         # Используем рекомендации Qwen если есть
         qwen_longs = []
@@ -579,30 +775,112 @@ class AutonomousAnalyzer:
                 validated_longs = await self._validate_opportunities(formatted_longs, "long")
                 validated_shorts = await self._validate_opportunities(formatted_shorts, "short")
                 
-                return validated_longs, validated_shorts
+                # КРИТИЧЕСКИ ВАЖНО: Если недостаточно - добавляем из candidates
+                if len(validated_longs) < 3:
+                    logger.warning(f"Only {len(validated_longs)} longs from Qwen, adding from candidates")
+                    validated_longs = await self._ensure_top_3(validated_longs, candidates, "long")
+                
+                if len(validated_shorts) < 3:
+                    logger.warning(f"Only {len(validated_shorts)} shorts from Qwen, adding from candidates")
+                    validated_shorts = await self._ensure_top_3(validated_shorts, candidates, "short")
+                
+                return validated_longs[:3], validated_shorts[:3]
         
         # Если Qwen не дал рекомендаций, используем наши кандидаты
+        # КРИТИЧЕСКИ ВАЖНО: НЕ фильтруем по score - показываем ВСЕ с предупреждениями
         # Разделяем на лонги и шорты
-        longs = [opp for opp in filtered if opp.get("side", "long").lower() == "long"]
-        shorts = [opp for opp in filtered if opp.get("side", "long").lower() == "short"]
+        all_longs = [opp for opp in candidates if opp.get("side", "long").lower() == "long"]
+        all_shorts = [opp for opp in candidates if opp.get("side", "long").lower() == "short"]
         
         # Сортируем по final_score
-        longs.sort(key=lambda x: x.get("final_score", 0), reverse=True)
-        shorts.sort(key=lambda x: x.get("final_score", 0), reverse=True)
+        all_longs.sort(key=lambda x: x.get("final_score", 0), reverse=True)
+        all_shorts.sort(key=lambda x: x.get("final_score", 0), reverse=True)
         
-        # Берем топ 3 каждого
-        top_longs = longs[:3]
-        top_shorts = shorts[:3]
+        # КРИТИЧЕСКИ ВАЖНО: Берем ТОП 3 каждого направления
+        # ДАЖЕ ЕСЛИ score < 8.0 - показываем с предупреждением
+        top_longs = []
+        top_shorts = []
         
-        # Форматируем для публикации
-        formatted_longs = [self._format_opportunity(opp) for opp in top_longs]
-        formatted_shorts = [self._format_opportunity(opp) for opp in top_shorts]
+        # Топ 3 ЛОНГА
+        for i, opp in enumerate(all_longs[:3]):
+            formatted = self._format_opportunity(opp)
+            
+            # Добавляем предупреждение если score < 8.0
+            final_score = opp.get("final_score", 0)
+            if final_score < 8.0:
+                formatted["warning"] = (
+                    f"⚠️ ВНИМАНИЕ: Score {final_score:.1f}/12 "
+                    f"ниже минимума (8.0). Рекомендуется ОСТОРОЖНОСТЬ или ПОДОЖДАТЬ."
+                )
+                formatted["recommendation"] = "ОСТОРОЖНО - только для опытных"
+            else:
+                formatted["recommendation"] = "ОТКРЫВАТЬ"
+            
+            top_longs.append(formatted)
+        
+        # Топ 3 ШОРТА  
+        for i, opp in enumerate(all_shorts[:3]):
+            formatted = self._format_opportunity(opp)
+            
+            # Добавляем предупреждение если score < 8.0
+            final_score = opp.get("final_score", 0)
+            if final_score < 8.0:
+                formatted["warning"] = (
+                    f"⚠️ ВНИМАНИЕ: Score {final_score:.1f}/12 "
+                    f"ниже минимума (8.0). Рекомендуется ОСТОРОЖНОСТЬ или ПОДОЖДАТЬ."
+                )
+                formatted["recommendation"] = "ОСТОРОЖНО - только для опытных"
+            else:
+                formatted["recommendation"] = "ОТКРЫВАТЬ"
+            
+            top_shorts.append(formatted)
         
         # Валидация через MCP validate_entry
-        validated_longs = await self._validate_opportunities(formatted_longs, "long")
-        validated_shorts = await self._validate_opportunities(formatted_shorts, "short")
+        validated_longs = await self._validate_opportunities(top_longs, "long")
+        validated_shorts = await self._validate_opportunities(top_shorts, "short")
+        
+        logger.info(
+            f"Finalized: {len(validated_longs)} longs, {len(validated_shorts)} shorts"
+        )
         
         return validated_longs, validated_shorts
+    
+    async def _ensure_top_3(
+        self,
+        existing: List[Dict[str, Any]],
+        candidates: List[Dict[str, Any]],
+        side: str
+    ) -> List[Dict[str, Any]]:
+        """Обеспечивает минимум 3 возможности для направления"""
+        
+        existing_symbols = {opp.get("symbol") for opp in existing}
+        
+        # Берем из candidates те, которых еще нет
+        additional = [
+            opp for opp in candidates
+            if opp.get("side", "long").lower() == side
+            and opp.get("symbol") not in existing_symbols
+        ]
+        
+        # Сортируем и берем недостающие
+        additional.sort(key=lambda x: x.get("final_score", 0), reverse=True)
+        needed = 3 - len(existing)
+        
+        for opp in additional[:needed]:
+            formatted = self._format_opportunity(opp)
+            final_score = opp.get("final_score", 0)
+            if final_score < 8.0:
+                formatted["warning"] = (
+                    f"⚠️ ВНИМАНИЕ: Score {final_score:.1f}/12 "
+                    f"ниже минимума (8.0). Рекомендуется ОСТОРОЖНОСТЬ."
+                )
+                formatted["recommendation"] = "ОСТОРОЖНО - только для опытных"
+            else:
+                formatted["recommendation"] = "ОТКРЫВАТЬ"
+            
+            existing.append(formatted)
+        
+        return existing
     
     async def _validate_opportunities(
         self,

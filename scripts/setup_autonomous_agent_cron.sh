@@ -61,3 +61,5 @@ echo -e "${YELLOW}📝 Проверить логи: tail -f $PROJECT_DIR/logs/cr
 echo -e "${YELLOW}🔄 Изменить расписание: $0 \"0 */2 * * *\"${NC}"
 
 
+
+

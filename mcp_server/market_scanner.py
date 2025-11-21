@@ -305,280 +305,43 @@ class MarketScanner:
         
         return True
     
-    def _check_composite_signal_hard_stop(self, analysis: Dict) -> Dict:
-        """
-        HARD STOP: Проверка composite signal
-        
-        Returns:
-            {"blocked": bool, "reason": str, "score_override": float, "penalty_multiplier": float, "warning": str}
-        """
-        composite = analysis.get('composite_signal', {})
-        signal = composite.get('signal', 'HOLD')
-        confidence = composite.get('confidence', 0.5)
-        
-        # HARD STOP #1: HOLD с низкой confidence
-        if signal == 'HOLD' and confidence < 0.5:
-            return {
-                "blocked": True,
-                "reason": f"Composite signal HOLD with low confidence ({confidence:.2f} < 0.5)",
-                "score_override": 0.0,
-                "penalty_multiplier": 0.0,
-                "warning": None
-            }
-        
-        # HARD STOP #2: Confidence слишком низкая для любого сигнала
-        if confidence < 0.4:
-            return {
-                "blocked": True,
-                "reason": f"Composite confidence too low ({confidence:.2f} < 0.4)",
-                "score_override": 0.0,
-                "penalty_multiplier": 0.0,
-                "warning": None
-            }
-        
-        # PENALTY: HOLD с средней confidence
-        if signal == 'HOLD':
-            return {
-                "blocked": False,
-                "reason": None,
-                "score_override": None,
-                "penalty_multiplier": confidence,  # 0.5 = 50% от score
-                "warning": f"Composite signal HOLD with confidence {confidence:.2f}"
-            }
-        
-        return {
-            "blocked": False,
-            "reason": None,
-            "score_override": None,
-            "penalty_multiplier": 1.0,
-            "warning": None
-        }
-    
-    def _check_scalping_volume(self, analysis: Dict, entry_timeframe: str = "5m") -> Dict:
-        """
-        Проверка volume для скальпинга на коротких таймфреймах
-        
-        Args:
-            analysis: Полный анализ актива
-            entry_timeframe: Таймфрейм входа (1m, 5m, 15m)
-        
-        Returns:
-            {"passed": bool, "reason": str, "volume_ratios": Dict, "score_penalty": float}
-        """
-        volume_checks = {}
-        short_tfs = ['1m', '5m', '15m']
-        
-        # Собираем volume на всех коротких TF
-        for tf in short_tfs:
-            tf_data = analysis.get('timeframes', {}).get(tf, {})
-            vol_data = tf_data.get('indicators', {}).get('volume', {})
-            vol_ratio = vol_data.get('volume_ratio', 1.0)
-            volume_checks[tf] = vol_ratio
-        
-        # HARD STOP #1: Volume слишком низкий на entry timeframe
-        entry_vol = volume_checks.get(entry_timeframe, 1.0)
-        if entry_vol < 0.5:
-            return {
-                "passed": False,
-                "reason": f"Volume too low on {entry_timeframe}: {entry_vol:.2f} (minimum 0.5)",
-                "volume_ratios": volume_checks,
-                "score_penalty": -10.0  # Блокируем
-            }
-        
-        # HARD STOP #2: Volume низкий на критических TF (1m, 5m) для скальпинга
-        if entry_timeframe in ['1m', '5m']:
-            critical_vol = volume_checks.get(entry_timeframe, 1.0)
-            if critical_vol < 0.5:
-                return {
-                    "passed": False,
-                    "reason": f"Volume too low for scalping on {entry_timeframe}: {critical_vol:.2f}",
-                    "volume_ratios": volume_checks,
-                    "score_penalty": -10.0
-                }
-        
-        # PENALTY: Низкий volume на всех коротких TF
-        max_vol = max([volume_checks.get(tf, 0) for tf in short_tfs])
-        if max_vol < 1.0:
-            return {
-                "passed": True,  # Не блокируем, но penalty
-                "reason": f"All short TF have low volume, max: {max_vol:.2f}",
-                "volume_ratios": volume_checks,
-                "score_penalty": -2.0  # Большой penalty
-            }
-        
-        # OK: Volume достаточен
-        return {
-            "passed": True,
-            "reason": "Volume sufficient for scalping",
-            "volume_ratios": volume_checks,
-            "score_penalty": 0.0
-        }
-    
-    def _check_macd_alignment(self, analysis: Dict, is_long: bool, entry_timeframe: str = "5m") -> Dict:
-        """
-        Проверка MACD alignment на коротких таймфреймах
-        
-        Args:
-            analysis: Полный анализ актива
-            is_long: True для LONG, False для SHORT
-            entry_timeframe: Таймфрейм входа
-        
-        Returns:
-            {"aligned": bool, "penalty": float, "bearish_count": int, "bullish_count": int, "details": Dict, "reason": str}
-        """
-        short_tfs = ['1m', '5m', '15m']
-        macd_details = {}
-        bearish_count = 0
-        bullish_count = 0
-        
-        # Проверяем MACD на всех коротких TF
-        for tf in short_tfs:
-            tf_data = analysis.get('timeframes', {}).get(tf, {})
-            macd = tf_data.get('indicators', {}).get('macd', {})
-            crossover = macd.get('crossover', 'neutral')
-            
-            macd_details[tf] = crossover
-            
-            if crossover == 'bearish':
-                bearish_count += 1
-            elif crossover == 'bullish':
-                bullish_count += 1
-        
-        # HARD STOP: Если 2+ TF показывают противоречие для LONG
-        if is_long and bearish_count >= 2:
-            return {
-                "aligned": False,
-                "penalty": -10.0,  # Блокируем
-                "bearish_count": bearish_count,
-                "bullish_count": bullish_count,
-                "details": macd_details,
-                "reason": f"MACD bearish on {bearish_count} short timeframes - BLOCKING LONG entry"
-            }
-        
-        # HARD STOP: Если 2+ TF показывают противоречие для SHORT
-        if not is_long and bullish_count >= 2:
-            return {
-                "aligned": False,
-                "penalty": -10.0,
-                "bearish_count": bearish_count,
-                "bullish_count": bullish_count,
-                "details": macd_details,
-                "reason": f"MACD bullish on {bullish_count} short timeframes - BLOCKING SHORT entry"
-            }
-        
-        # PENALTY: Один противоречащий MACD
-        penalty = 0.0
-        if is_long and bearish_count >= 1:
-            penalty = -1.0 * bearish_count  # -1.0 за каждый bearish
-        elif not is_long and bullish_count >= 1:
-            penalty = -1.0 * bullish_count
-        
-        return {
-            "aligned": penalty >= -1.0,  # Один bearish = aligned но с penalty
-            "penalty": penalty,
-            "bearish_count": bearish_count,
-            "bullish_count": bullish_count,
-            "details": macd_details,
-            "reason": f"MACD penalty: {penalty:.1f}" if penalty < 0 else "MACD aligned"
-        }
-    
-    def _check_hard_stops(self, analysis: Dict, entry_plan: Dict, is_long: bool, entry_timeframe: str = "5m") -> Dict:
-        """
-        Обязательные проверки которые БЛОКИРУЮТ вход
-        
-        Args:
-            analysis: Полный анализ актива
-            entry_plan: План входа
-            is_long: True для LONG, False для SHORT
-            entry_timeframe: Таймфрейм входа
-        
-        Returns:
-            {"blocked": bool, "stops": List[str], "can_proceed": bool, "details": Dict}
-        """
-        stops = []
-        blocked = False
-        details = {}
-        
-        composite = analysis.get('composite_signal', {})
-        
-        # STOP #1: Composite Signal = HOLD с низкой confidence
-        signal = composite.get('signal', 'HOLD')
-        confidence = composite.get('confidence', 0.5)
-        if signal == 'HOLD' and confidence < 0.5:
-            stops.append(f"Composite signal HOLD with low confidence ({confidence:.2f} < 0.5)")
-            blocked = True
-            details['composite_signal'] = {"signal": signal, "confidence": confidence}
-        
-        # STOP #2: Confidence слишком низкая
-        if confidence < 0.4:
-            stops.append(f"Composite confidence too low ({confidence:.2f} < 0.4)")
-            blocked = True
-            details['confidence'] = confidence
-        
-        # STOP #3: MACD bearish на 2+ коротких TF для LONG
-        if is_long:
-            macd_check = self._check_macd_alignment(analysis, is_long, entry_timeframe)
-            if macd_check.get("bearish_count", 0) >= 2:
-                stops.append(f"MACD bearish on {macd_check['bearish_count']} short timeframes")
-                blocked = True
-                details['macd'] = macd_check.get("details", {})
-        
-        # STOP #4: MACD bullish на 2+ коротких TF для SHORT
-        if not is_long:
-            macd_check = self._check_macd_alignment(analysis, is_long, entry_timeframe)
-            if macd_check.get("bullish_count", 0) >= 2:
-                stops.append(f"MACD bullish on {macd_check['bullish_count']} short timeframes")
-                blocked = True
-                details['macd'] = macd_check.get("details", {})
-        
-        # STOP #5: Volume слишком низкий для скальпинга
-        volume_check = self._check_scalping_volume(analysis, entry_timeframe)
-        if not volume_check.get("passed", True):
-            stops.append(volume_check.get("reason", "Volume too low"))
-            blocked = True
-            details['volume'] = volume_check.get("volume_ratios", {})
-        
-        # STOP #6: BB Squeeze без volume confirmation
-        for tf in ['1m', '5m', '15m']:
-            tf_data = analysis.get('timeframes', {}).get(tf, {})
-            bb = tf_data.get('indicators', {}).get('bollinger_bands', {})
-            vol_data = tf_data.get('indicators', {}).get('volume', {})
-            
-            if bb.get('squeeze', False) and vol_data.get('volume_ratio', 1.0) < 0.5:
-                stops.append(f"BB Squeeze on {tf} without volume confirmation (vol_ratio: {vol_data.get('volume_ratio', 0):.2f})")
-                blocked = True
-                details['bb_squeeze'] = {tf: {"squeeze": True, "volume_ratio": vol_data.get('volume_ratio', 0)}}
-                break
-        
-        return {
-            "blocked": blocked,
-            "stops": stops,
-            "can_proceed": not blocked,
-            "details": details
-        }
     
     def _calculate_opportunity_score(self, analysis: Dict, ticker: Dict, btc_trend: str = "neutral", entry_plan: Dict = None) -> Dict[str, Any]:
         """
-        Расчёт scoring возможности (0-10) на основе 10-факторной матрицы.
-        Returns: {"total": float, "breakdown": Dict, "blocked": bool, "reason": str, "warning": str}
+        15-POINT CONFLUENCE MATRIX (SIMPLIFIED - NO PARANOID STOPS)
+        
+        CLASSIC TA (6 points):
+        1. Trend Alignment: 0-2
+        2. Indicators: 0-2
+        3. Pattern: 0-1
+        4. S/R Level: 0-1
+        
+        ORDER FLOW (4 points):
+        5. CVD + Aggressive: 0-2
+        6. Volume: 0-1
+        7. BTC Support: 0-1
+        
+        SMART MONEY (3 points):
+        8. Order Blocks: 0-1
+        9. FVG: 0-1
+        10. BOS/ChoCh: 0-1
+        
+        BONUSES (2 points):
+        11. R:R ≥ 2.5: 0-1
+        12. ADX > 25: 0-1
+        
+        РЕКОМЕНДАЦИИ:
+        7.0+/15 = Можно рассмотреть (с warning)
+        10.0+/15 = Recommended
+        12.0+/15 = Strong
+        13.5+/15 = Excellent
         """
-        # HARD STOP: Проверка composite signal ПЕРВЫМ
-        composite_check = self._check_composite_signal_hard_stop(analysis)
-        if composite_check.get("blocked", False):
-            return {
-                "total": 0.0,
-                "breakdown": {},
-                "blocked": True,
-                "reason": composite_check.get("reason", "Composite signal check failed"),
-                "warning": None
-            }
         
         score = 0.0
         breakdown = {}
         
         composite = analysis.get('composite_signal', {})
         signal = composite.get('signal', 'HOLD')
-        
         is_long = signal in ['STRONG_BUY', 'BUY']
         is_short = signal in ['STRONG_SELL', 'SELL']
         
@@ -588,52 +351,27 @@ class MarketScanner:
             is_long = buy_signals > sell_signals
             is_short = sell_signals > buy_signals
         
-        # Определяем entry timeframe (из entry_plan или по умолчанию)
-        entry_timeframe = "5m"  # По умолчанию
-        if entry_plan and entry_plan.get('timeframe'):
-            entry_timeframe = entry_plan.get('timeframe')
+        h4_data = analysis.get('timeframes', {}).get('4h', {})
+        current_price = ticker['price']
         
-        # Проверка volume для скальпинга
-        volume_check = self._check_scalping_volume(analysis, entry_timeframe)
-        if not volume_check.get("passed", True):
-            return {
-                "total": 0.0,
-                "breakdown": {},
-                "blocked": True,
-                "reason": volume_check.get("reason", "Volume check failed"),
-                "warning": None
-            }
+        # === CLASSIC TA (6 points) ===
         
-        # Проверка MACD alignment
-        macd_check = self._check_macd_alignment(analysis, is_long, entry_timeframe)
-        if not macd_check.get("aligned", True) or macd_check.get("penalty", 0) <= -10.0:
-            return {
-                "total": 0.0,
-                "breakdown": {},
-                "blocked": True,
-                "reason": macd_check.get("reason", "MACD alignment check failed"),
-                "warning": None
-            }
-            
-        # 1. Trend Alignment (0-2.0)
-        # Multi-timeframe alignment
+        # 1. Trend Alignment (0-2)
         alignment = composite.get('alignment', 0.5)
+        h4_trend = h4_data.get('trend', {}).get('direction', 'neutral')
+        
         trend_score = 0.0
         if alignment >= 0.8: trend_score = 2.0
-        elif alignment >= 0.6: trend_score = 1.0
-        elif alignment >= 0.5: trend_score = 0.5
+        elif alignment >= 0.6: trend_score = 1.5
+        elif alignment >= 0.5: trend_score = 1.0
         
-        # Проверяем тренд 4H
-        h4_trend = analysis.get('timeframes', {}).get('4h', {}).get('trend', {}).get('direction', 'neutral')
-        if is_long and h4_trend == 'uptrend': trend_score += 0.5
-        if is_short and h4_trend == 'downtrend': trend_score += 0.5
+        if is_long and h4_trend == 'uptrend': trend_score = min(2.0, trend_score + 0.5)
+        if is_short and h4_trend == 'downtrend': trend_score = min(2.0, trend_score + 0.5)
         
         breakdown['trend'] = min(2.0, trend_score)
         score += breakdown['trend']
         
-        # 2. Indicators (0-2.0)
-        # Based on composite score (-10 to +10) normalized or confidence
-        indicator_score = 0.0
+        # 2. Indicators (0-2)
         comp_score = abs(composite.get('score', 0))
         if comp_score >= 7: indicator_score = 2.0
         elif comp_score >= 5: indicator_score = 1.5
@@ -643,8 +381,65 @@ class MarketScanner:
         breakdown['indicators'] = indicator_score
         score += indicator_score
         
-        # 3. Volume (0-1.0)
-        h4_data = analysis.get('timeframes', {}).get('4h', {})
+        # 3. Pattern (0-1)
+        patterns = h4_data.get('patterns', {}).get('candlestick', [])
+        pattern_score = 0.0
+        for p in patterns:
+            if (is_long and p['type'] == 'bullish') or (is_short and p['type'] == 'bearish'):
+                pattern_score = 1.0
+                break
+        breakdown['pattern'] = pattern_score
+        score += pattern_score
+        
+        # 4. S/R Level (0-1)
+        levels = h4_data.get('levels', {})
+        sr_score = 0.5
+        
+        if is_long:
+            supports = levels.get('support', [])
+            if supports:
+                closest = max([s for s in supports if s < current_price], default=0)
+                if closest > 0:
+                    dist_pct = (current_price - closest) / current_price
+                    if dist_pct < 0.02: sr_score = 1.0
+                    elif dist_pct < 0.05: sr_score = 0.8
+        elif is_short:
+            resistances = levels.get('resistance', [])
+            if resistances:
+                closest = min([r for r in resistances if r > current_price], default=float('inf'))
+                if closest != float('inf'):
+                    dist_pct = (closest - current_price) / current_price
+                    if dist_pct < 0.02: sr_score = 1.0
+                    elif dist_pct < 0.05: sr_score = 0.8
+        
+        breakdown['sr_level'] = sr_score
+        score += sr_score
+        
+        # === ORDER FLOW (4 points) ===
+        
+        # 5. CVD + Aggressive (0-2)
+        cvd_score = 0.0
+        cvd_data = analysis.get('cvd_analysis', {})
+        signal_type = cvd_data.get('signal', 'NONE')
+        aggressive_ratio = cvd_data.get('aggressive_ratio', 1.0)
+        
+        if signal_type == 'BULLISH_ABSORPTION' and is_long:
+            cvd_score = 2.0
+        elif signal_type == 'BEARISH_ABSORPTION' and is_short:
+            cvd_score = 2.0
+        elif signal_type == 'AGGRESSIVE_BUYING' and is_long:
+            cvd_score = 1.5
+        elif signal_type == 'AGGRESSIVE_SELLING' and is_short:
+            cvd_score = 1.5
+        elif signal_type == 'BEARISH_ABSORPTION' and is_long:
+            cvd_score = -1.0
+        elif signal_type == 'BULLISH_ABSORPTION' and is_short:
+            cvd_score = -1.0
+        
+        breakdown['cvd'] = cvd_score
+        score += cvd_score
+        
+        # 6. Volume (0-1)
         vol_ratio = h4_data.get('indicators', {}).get('volume', {}).get('volume_ratio', 1.0)
         vol_score = 0.0
         if vol_ratio >= 2.0: vol_score = 1.0
@@ -654,207 +449,147 @@ class MarketScanner:
         breakdown['volume'] = vol_score
         score += vol_score
         
-        # 4. Pattern (0-1.0)
-        pattern_score = 0.0
-        patterns = analysis.get('timeframes', {}).get('4h', {}).get('patterns', {}).get('candlestick', [])
-        if patterns:
-            # Check if pattern matches direction
-            valid_pattern = False
-            for p in patterns:
-                if is_long and p['type'] == 'bullish': valid_pattern = True
-                if is_short and p['type'] == 'bearish': valid_pattern = True
-            
-            if valid_pattern: pattern_score = 1.0
-        
-        breakdown['pattern'] = pattern_score
-        score += pattern_score
-        
-        # 5. R:R (0-1.0) - REAL CALCULATION
-        rr_score = 0.0
-        if entry_plan:
-            risk_reward = entry_plan.get('risk_reward', 0)
-            if risk_reward >= 3.0: rr_score = 1.0
-            elif risk_reward >= 2.0: rr_score = 0.8
-            elif risk_reward >= 1.5: rr_score = 0.5
-            else: rr_score = 0.0 # Penalty for bad R:R
-        
-        breakdown['risk_reward'] = rr_score
-        score += rr_score
-        
-        # 6. BTC Support (0-1.0)
+        # 7. BTC Support (0-1)
         btc_score = 0.0
         if is_long:
             if btc_trend == 'uptrend': btc_score = 1.0
             elif btc_trend == 'sideways': btc_score = 0.5
-            elif btc_trend == 'downtrend': btc_score = 0.0 # Penalty!
         elif is_short:
             if btc_trend == 'downtrend': btc_score = 1.0
             elif btc_trend == 'sideways': btc_score = 0.5
-            elif btc_trend == 'uptrend': btc_score = 0.0
-        else:
-            btc_score = 0.5
-            
+        
         breakdown['btc_support'] = btc_score
         score += btc_score
         
-        # 7. S/R Level (0-1.0)
-        sr_score = 0.5 # Default
-        current_price = ticker['price']
-        levels = h4_data.get('levels', {})
+        # === SMART MONEY (3 points) ===
         
-        if is_long:
-            supports = levels.get('support', [])
-            if supports:
-                # Find closest support below price
-                closest = max([s for s in supports if s < current_price], default=0)
-                if closest > 0:
-                    dist_pct = (current_price - closest) / current_price
-                    if dist_pct < 0.05: sr_score = 1.0 # Close to support
-                    elif dist_pct < 0.1: sr_score = 0.8
-        elif is_short:
-            resistances = levels.get('resistance', [])
-            if resistances:
-                closest = min([r for r in resistances if r > current_price], default=float('inf'))
-                if closest != float('inf'):
-                    dist_pct = (closest - current_price) / current_price
-                    if dist_pct < 0.05: sr_score = 1.0
-                    elif dist_pct < 0.1: sr_score = 0.8
-                    
-        breakdown['sr_level'] = sr_score
-        score += sr_score
-        
-        # 8. Trend Strength (ADX) (0-0.5)
-        adx = h4_data.get('indicators', {}).get('adx', {}).get('adx', 0)
-        adx_score = 0.0
-        if adx > 25: adx_score = 0.5
-        elif adx > 20: adx_score = 0.3
-        breakdown['trend_strength'] = adx_score
-        score += adx_score
-
-        # SMART MONEY ИНДИКАТОРЫ (институциональная активность)
-        # CVD и Order Blocks показывают где крупные игроки накапливают/распределяют
-        # Эти сигналы надежнее розничных индикаторов (RSI, MACD)
-        
-        # 9. Order Blocks - зоны институциональных ордеров (0-1.5, высокий вес)
+        # 8. Order Blocks (0-1)
         ob_score = 0.0
         order_blocks = h4_data.get('order_blocks', [])
         
         if is_long:
             has_bullish_ob = any(ob['type'] == 'bullish_ob' for ob in order_blocks)
-            if has_bullish_ob:
-                ob_score = 1.5  # Bullish order block - сильная поддержка
-                bullish_count = len([ob for ob in order_blocks if ob['type'] == 'bullish_ob'])
-                logger.debug(f"{ticker.get('symbol', 'UNKNOWN')}: {bullish_count} bullish order block(s) detected (+1.5)")
+            if has_bullish_ob: ob_score = 1.0
         elif is_short:
             has_bearish_ob = any(ob['type'] == 'bearish_ob' for ob in order_blocks)
-            if has_bearish_ob:
-                ob_score = -1.0  # Bearish order block - сильное сопротивление для short
-                bearish_count = len([ob for ob in order_blocks if ob['type'] == 'bearish_ob'])
-                logger.debug(f"{ticker.get('symbol', 'UNKNOWN')}: {bearish_count} bearish order block(s) detected (-1.0)")
+            if has_bearish_ob: ob_score = 1.0
         
         breakdown['order_blocks'] = ob_score
         score += ob_score
-
-        # 10. CVD Divergence - Smart Money индикатор (0-1.5, высокий вес)
-        cvd_score = 0.0
-        cvd_data = analysis.get('cvd_analysis', {})
         
-        if cvd_data.get('signal') == 'BULLISH_ABSORPTION' and is_long:
-            cvd_score = 1.5  # Институциональное накопление - сильный сигнал
-            logger.debug(f"{ticker.get('symbol', 'UNKNOWN')}: CVD bullish absorption detected (+1.5)")
-        elif cvd_data.get('signal') == 'BEARISH_ABSORPTION' and is_short:
-            cvd_score = 1.5  # Институциональная дистрибуция для short - сильный сигнал
-            logger.debug(f"{ticker.get('symbol', 'UNKNOWN')}: CVD bearish absorption detected (+1.5)")
-        elif cvd_data.get('signal') == 'BEARISH_ABSORPTION' and is_long:
-            cvd_score = -1.0  # Институциональная дистрибуция - медвежий сигнал
-            logger.debug(f"{ticker.get('symbol', 'UNKNOWN')}: CVD bearish absorption detected for LONG position (-1.0)")
-        elif cvd_data.get('signal') == 'BULLISH_ABSORPTION' and is_short:
-            cvd_score = -1.0  # Институциональное накопление - бычий сигнал (плохо для short)
-            logger.debug(f"{ticker.get('symbol', 'UNKNOWN')}: CVD bullish absorption detected for SHORT position (-1.0)")
+        # 9. FVG (0-1)
+        fvg_score = 0.0
+        fvgs = h4_data.get('fair_value_gaps', [])
         
-        breakdown['cvd'] = cvd_score
-        score += cvd_score
+        if is_long:
+            bullish_fvgs = [fvg for fvg in fvgs if fvg['type'] == 'bullish_fvg']
+            if bullish_fvgs:
+                closest = bullish_fvgs[0]
+                dist_pct = abs(current_price - closest['mid']) / current_price * 100
+                if dist_pct < 2.0:
+                    fvg_score = 1.0 if closest['strength'] == 'strong' else 0.75
+        elif is_short:
+            bearish_fvgs = [fvg for fvg in fvgs if fvg['type'] == 'bearish_fvg']
+            if bearish_fvgs:
+                closest = bearish_fvgs[0]
+                dist_pct = abs(current_price - closest['mid']) / current_price * 100
+                if dist_pct < 2.0:
+                    fvg_score = 1.0 if closest['strength'] == 'strong' else 0.75
         
-        # Применяем penalties
-        volume_penalty = volume_check.get("score_penalty", 0.0)
-        if volume_penalty < 0:
-            score += volume_penalty
-            breakdown['volume_penalty'] = volume_penalty
+        breakdown['fvg'] = fvg_score
+        score += fvg_score
         
-        macd_penalty = macd_check.get("penalty", 0.0)
-        if macd_penalty < 0:
-            score += macd_penalty
-            breakdown['macd_penalty'] = macd_penalty
+        # 10. BOS/ChoCh (0-1)
+        structure_score = 0.0
+        structure = h4_data.get('structure', {})
         
-        # Применяем penalty multiplier от composite signal (для HOLD с средней confidence)
-        penalty_multiplier = composite_check.get("penalty_multiplier", 1.0)
-        final_score = score * penalty_multiplier
+        if is_long:
+            bos_events = structure.get('bos', [])
+            bullish_bos = [e for e in bos_events if e['type'] == 'bullish_bos']
+            if bullish_bos: structure_score = 1.0
+        elif is_short:
+            bos_events = structure.get('bos', [])
+            bearish_bos = [e for e in bos_events if e['type'] == 'bearish_bos']
+            if bearish_bos: structure_score = 1.0
         
-        # Ограничиваем score в диапазоне 0-10
-        final_score_capped = min(10.0, max(0.0, final_score))
+        breakdown['structure'] = structure_score
+        score += structure_score
+        
+        # === BONUSES (2 points) ===
+        
+        # 11. R:R ≥ 2.5 (0-1)
+        rr_score = 0.0
+        if entry_plan:
+            risk_reward = entry_plan.get('risk_reward', 0)
+            if risk_reward >= 3.0: rr_score = 1.0
+            elif risk_reward >= 2.5: rr_score = 0.75
+            elif risk_reward >= 2.0: rr_score = 0.5
+        
+        breakdown['risk_reward'] = rr_score
+        score += rr_score
+        
+        # 12. ADX > 25 (0-1)
+        adx = h4_data.get('indicators', {}).get('adx', {}).get('adx', 0)
+        adx_score = 0.0
+        if adx > 30: adx_score = 1.0
+        elif adx > 25: adx_score = 0.75
+        elif adx > 20: adx_score = 0.5
+        
+        breakdown['trend_strength'] = adx_score
+        score += adx_score
+        
+        # Ограничиваем score в диапазоне 0-15
+        final_score = min(15.0, max(0.0, score))
         
         # Логируем финальный score
         symbol = ticker.get('symbol', 'UNKNOWN')
-        logger.info(f"{symbol}: Final opportunity score = {final_score_capped:.2f} (raw: {final_score:.2f}, penalty_mult: {penalty_multiplier:.2f})")
+        logger.info(f"{symbol}: 15-point score = {final_score:.2f}/15")
+        
+        # Добавляем warning если score низкий
+        warning = None
+        if final_score < 7.0:
+            warning = f"⚠️ Score {final_score:.1f}/15 too low - not recommended"
+        elif final_score < 10.0:
+            warning = f"⚠️ Score {final_score:.1f}/15 below recommended minimum (need 10.0+)"
         
         return {
-            "total": final_score_capped,
+            "total": final_score,
             "breakdown": breakdown,
             "blocked": False,
             "reason": None,
-            "warning": composite_check.get("warning")
+            "warning": warning
         }
     
     def _estimate_probability(self, score: float, analysis: Dict) -> float:
         """
-        Оценка вероятности успеха - ИСПРАВЛЕННАЯ ВЕРСИЯ
+        Оценка вероятности для 15-point системы (SIMPLIFIED)
+        
+        Score 7.0/15 = 50% probability (can consider)
+        Score 10.0/15 = 70% probability (recommended)
+        Score 12.0/15 = 80% probability (strong)
+        Score 13.5/15 = 90% probability (excellent)
         
         Args:
-            score: Confluence score (0-10)
+            score: Confluence score (0-15)
             analysis: Полный анализ актива
         
         Returns:
-            Вероятность успеха (0.0-0.95)
+            Вероятность успеха (0.30-0.95)
         """
         composite = analysis.get('composite_signal', {})
-        signal = composite.get('signal', 'HOLD')
-        confidence = composite.get('confidence', 0.5)
+        confidence = composite.get('confidence', 0.7)
         
-        # HARD STOP #1: HOLD сигнал с низкой confidence
-        if signal == 'HOLD' and confidence < 0.5:
-            return 0.0  # Нулевая вероятность!
+        # Базовая вероятность от 15-point score
+        # Простая линейная формула: score/15 * 1.35
+        # 7/15 = 0.46 * 1.35 = 0.62 → ~0.50 после adjustment
+        # 10/15 = 0.67 * 1.35 = 0.90 → ~0.70 после adjustment
+        # 12/15 = 0.80 * 1.35 = 1.08 → ~0.80 после adjustment
+        base_prob = min(0.95, max(0.30, (score / 15.0) * 1.35))
         
-        # HARD STOP #2: Confidence слишком низкая
-        if confidence < 0.4:
-            return 0.0  # Нулевая вероятность!
+        # Умножаем на confidence (but keep reasonable)
+        adjusted_prob = base_prob * max(0.7, confidence)
         
-        # Базовая вероятность от score
-        # Score 5.0 = 50%, Score 8.0 = 65%, Score 10.0 = 75%
-        base_prob = 0.5 + (score - 5) * 0.05
-        base_prob = max(0.3, min(0.75, base_prob))  # Ограничиваем 30-75%
-        
-        # КРИТИЧНО: Confidence - это MULTIPLIER, не additive
-        # Если confidence = 0.5, то probability должна быть 50% от base
-        # Если confidence = 0.8, то probability = 80% от base
-        adjusted_prob = base_prob * confidence
-        
-        # Дополнительная корректировка на composite score
-        comp_score = abs(composite.get('score', 0))
-        if comp_score < 3:
-            adjusted_prob *= 0.7  # Ещё больше снижаем при слабом composite score
-        
-        # Корректировка на signal type
-        if signal == 'STRONG_BUY' or signal == 'STRONG_SELL':
-            adjusted_prob *= 1.1  # +10% за strong signal
-        elif signal == 'BUY' or signal == 'SELL':
-            adjusted_prob *= 1.0  # Без изменений
-        elif signal == 'HOLD':
-            adjusted_prob *= 0.5  # -50% за HOLD (даже если confidence OK)
-        
-        # Финальные ограничения
-        final_prob = min(0.95, max(0.0, adjusted_prob))
-        
-        return round(final_prob, 2)
+        return round(min(0.95, max(0.30, adjusted_prob)), 2)
     
     def _generate_entry_plan(self, analysis: Dict, ticker: Dict, account_balance: Optional[float] = None, risk_percent: float = 0.02) -> Dict[str, Any]:
         """Генерация плана входа (для LONG или SHORT) с Динамическим риск-менеджментом

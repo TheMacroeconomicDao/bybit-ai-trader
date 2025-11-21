@@ -9,6 +9,7 @@ from typing import Dict, List, Any, Optional
 from datetime import datetime
 import ta
 from loguru import logger
+from .structure_analyzer import StructureAnalyzer
 
 
 class TechnicalAnalysis:
@@ -17,6 +18,7 @@ class TechnicalAnalysis:
     def __init__(self, bybit_client):
         self.client = bybit_client
         self._btc_cache = {"data": None, "timestamp": 0}
+        self.structure_analyzer = StructureAnalyzer()
         logger.info("Technical Analysis engine initialized")
     
     async def analyze_asset(
@@ -108,6 +110,12 @@ class TechnicalAnalysis:
         # Order Blocks
         order_blocks = self.find_order_blocks(df)
         
+        # Fair Value Gaps
+        fvgs = self.find_fair_value_gaps(df)
+        
+        # Structure Analysis (BOS/ChoCh)
+        structure = self.structure_analyzer.detect_structure_breaks(df)
+        
         # Генерация сигнала
         signal = self._generate_signal(indicators, trend, levels, patterns)
         
@@ -124,6 +132,8 @@ class TechnicalAnalysis:
             "levels": levels,
             "patterns": patterns,
             "order_blocks": order_blocks,
+            "fair_value_gaps": fvgs,
+            "structure": structure,
             "signal": signal
         }
     
@@ -566,40 +576,57 @@ class TechnicalAnalysis:
     
     async def get_cvd_divergence(self, symbol: str, limit: int = 1000) -> Dict[str, Any]:
         """
-        Анализ Order Flow: Cumulative Volume Delta (CVD) Divergence
-        Определяет поглощение (Absorption) лимитными ордерами.
+        Анализ Order Flow: Cumulative Volume Delta (CVD) + Aggressive Ratio
+        Определяет поглощение лимитными ордерами и агрессивность покупателей/продавцов.
         """
-        logger.info(f"Calculating CVD divergence for {symbol}")
+        logger.info(f"Calculating CVD + Aggressive Ratio for {symbol}")
         try:
             trades = await self.client.get_public_trade_history(symbol, limit=limit)
             if not trades:
                 return {"signal": "NONE", "details": "No trades data"}
 
-            # Сортируем от старых к новым
             trades.sort(key=lambda x: x['timestamp'])
             
             cumulative_delta = 0
             cvd_series = []
             price_series = []
             
+            # НОВОЕ: Aggressive tracking
+            aggressive_buys = 0
+            aggressive_sells = 0
+            total_buy_volume = 0
+            total_sell_volume = 0
+            
             for trade in trades:
                 size = float(trade['amount'])
                 price = float(trade['price'])
-                side = 1 if trade['side'] == 'buy' else -1
+                side = trade['side']  # 'buy' или 'sell'
                 
-                cumulative_delta += (size * side)
+                if side == 'buy':
+                    cumulative_delta += size
+                    aggressive_buys += 1
+                    total_buy_volume += size
+                else:
+                    cumulative_delta -= size
+                    aggressive_sells += 1
+                    total_sell_volume += size
+                
                 cvd_series.append(cumulative_delta)
                 price_series.append(price)
             
             if not price_series:
                 return {"signal": "NONE"}
 
-            # Анализ дивергенции (последние 20% vs первые 20%)
+            # Анализ дивергенции
             idx_start = 0
             idx_end = len(price_series) - 1
             
             price_change = (price_series[idx_end] - price_series[idx_start]) / price_series[idx_start]
             cvd_change = cvd_series[idx_end] - cvd_series[idx_start]
+            
+            # НОВОЕ: Aggressive Ratio
+            aggressive_ratio = aggressive_buys / aggressive_sells if aggressive_sells > 0 else 0
+            volume_ratio = total_buy_volume / total_sell_volume if total_sell_volume > 0 else 0
             
             signal = "NONE"
             details = "No divergence"
@@ -613,11 +640,23 @@ class TechnicalAnalysis:
             elif price_change > 0.005 and cvd_change < 0:
                 signal = "BEARISH_ABSORPTION"
                 details = "Price rising, but aggressive selling detected (Limit Sell Absorption)"
+            
+            # НОВОЕ: Aggressive Dominance (без дивергенции, но сильный перекос)
+            elif aggressive_ratio > 2.5:
+                signal = "AGGRESSIVE_BUYING"
+                details = f"Strong buying pressure (ratio: {aggressive_ratio:.2f})"
+            elif aggressive_ratio < 0.4:
+                signal = "AGGRESSIVE_SELLING"
+                details = f"Strong selling pressure (ratio: {aggressive_ratio:.2f})"
                 
             return {
                 "signal": signal,
                 "price_change_pct": round(price_change * 100, 2),
                 "cvd_delta": round(cvd_change, 2),
+                "aggressive_ratio": round(aggressive_ratio, 2),
+                "volume_ratio": round(volume_ratio, 2),
+                "aggressive_buys": aggressive_buys,
+                "aggressive_sells": aggressive_sells,
                 "details": details,
                 "trades_count": len(trades)
             }
@@ -691,6 +730,80 @@ class TechnicalAnalysis:
                 
         # Возвращаем последние 3 OB
         return active_obs[-3:]
+    
+    def find_fair_value_gaps(self, df: pd.DataFrame) -> List[Dict[str, Any]]:
+        """
+        Поиск FVG (Fair Value Gaps) - институциональные зоны дисбаланса
+        
+        Bullish FVG: Gap между candle[i].low и candle[i+2].high
+        Bearish FVG: Gap между candle[i].high и candle[i+2].low
+        
+        Args:
+            df: DataFrame с OHLCV данными
+        
+        Returns:
+            Список FVG с координатами и силой
+        """
+        fvgs = []
+        if len(df) < 3:
+            return []
+        
+        candles = df.to_dict('records')
+        current_price = candles[-1]['close']
+        
+        # Итерация (исключая последние 2 свечи для подтверждения)
+        for i in range(len(candles) - 2):
+            candle_1 = candles[i]
+            candle_2 = candles[i+1]
+            candle_3 = candles[i+2]
+            
+            # Bullish FVG: Импульс вверх оставил gap
+            # candle_3.low > candle_1.high (gap между ними)
+            if candle_3['low'] > candle_1['high']:
+                gap_size = candle_3['low'] - candle_1['high']
+                gap_pct = (gap_size / candle_1['high']) * 100
+                
+                # Фильтруем мелкие gaps (< 0.1%)
+                if gap_pct >= 0.1:
+                    fvg = {
+                        "type": "bullish_fvg",
+                        "top": candle_3['low'],
+                        "bottom": candle_1['high'],
+                        "mid": (candle_3['low'] + candle_1['high']) / 2,
+                        "size_pct": round(gap_pct, 3),
+                        "index": i,
+                        "strength": "strong" if gap_pct >= 0.5 else "moderate",
+                        "filled": current_price < candle_1['high']  # Gap заполнен?
+                    }
+                    fvgs.append(fvg)
+            
+            # Bearish FVG: Импульс вниз оставил gap
+            # candle_3.high < candle_1.low (gap между ними)
+            elif candle_3['high'] < candle_1['low']:
+                gap_size = candle_1['low'] - candle_3['high']
+                gap_pct = (gap_size / candle_1['low']) * 100
+                
+                if gap_pct >= 0.1:
+                    fvg = {
+                        "type": "bearish_fvg",
+                        "top": candle_1['low'],
+                        "bottom": candle_3['high'],
+                        "mid": (candle_1['low'] + candle_3['high']) / 2,
+                        "size_pct": round(gap_pct, 3),
+                        "index": i,
+                        "strength": "strong" if gap_pct >= 0.5 else "moderate",
+                        "filled": current_price > candle_1['low']
+                    }
+                    fvgs.append(fvg)
+        
+        # Возвращаем только незаполненные FVG (актуальные для торговли)
+        active_fvgs = [fvg for fvg in fvgs if not fvg['filled']]
+        
+        # Сортируем по расстоянию от текущей цены (ближайшие важнее)
+        active_fvgs.sort(key=lambda x: abs(current_price - x['mid']))
+        
+        # Возвращаем последние 3 актуальных FVG
+        return active_fvgs[:3]
     
     def _check_hard_stops_for_validation(self, analysis: Dict, is_long: bool, entry_timeframe: str = "5m") -> Dict:
         """
