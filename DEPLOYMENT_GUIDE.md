@@ -18,13 +18,13 @@ git pull origin main
 
 # 3. Сборка образа
 docker build \
-  -t ghcr.io/themacroeconomicdao/trader-agent:main \
-  -t ghcr.io/themacroeconomicdao/trader-agent:latest \
+  -t ghcr.io/themacroeconomicdao/bybit-ai-trader:main \
+  -t ghcr.io/themacroeconomicdao/bybit-ai-trader:latest \
   -f Dockerfile .
 
-# 4. Push в registry
-docker push ghcr.io/themacroeconomicdao/trader-agent:main
-docker push ghcr.io/themacroeconomicdao/trader-agent:latest
+# 4. Push в registry (или используйте GitHub Actions для автоматического push)
+docker push ghcr.io/themacroeconomicdao/bybit-ai-trader:main
+docker push ghcr.io/themacroeconomicdao/bybit-ai-trader:latest
 
 # 5. Deploy в Kubernetes
 kubectl apply -f k8s/namespace.yaml
@@ -143,9 +143,9 @@ gh secret list
 cd /Users/Gyber/GYBERNATY-ECOSYSTEM/TRADER-AGENT
 
 docker build \
-  -t ghcr.io/themacroeconomicdao/trader-agent:main \
-  -t ghcr.io/themacroeconomicdao/trader-agent:latest \
-  -t ghcr.io/themacroeconomicdao/trader-agent:$(git rev-parse --short HEAD) \
+  -t ghcr.io/themacroeconomicdao/bybit-ai-trader:main \
+  -t ghcr.io/themacroeconomicdao/bybit-ai-trader:latest \
+  -t ghcr.io/themacroeconomicdao/bybit-ai-trader:$(git rev-parse --short HEAD) \
   -f Dockerfile .
 ```
 
@@ -159,7 +159,7 @@ docker build \
 docker images | grep trader-agent | head -3
 
 # Должны увидеть:
-# ghcr.io/themacroeconomicdao/trader-agent   main    XXXXX   N seconds/minutes ago   350MB
+# ghcr.io/themacroeconomicdao/bybit-ai-trader   main    XXXXX   N seconds/minutes ago   350MB
 ```
 
 ---
@@ -175,11 +175,11 @@ echo "$GITHUB_TOKEN" | docker login ghcr.io -u TheMacroeconomicDao --password-st
 ### Push образа:
 
 ```bash
-docker push ghcr.io/themacroeconomicdao/trader-agent:main
-docker push ghcr.io/themacroeconomicdao/trader-agent:latest
+docker push ghcr.io/themacroeconomicdao/bybit-ai-trader:main
+docker push ghcr.io/themacroeconomicdao/bybit-ai-trader:latest
 
 # Опционально - версионный тег
-docker push ghcr.io/themacroeconomicdao/trader-agent:$(git rev-parse --short HEAD)
+docker push ghcr.io/themacroeconomicdao/bybit-ai-trader:$(git rev-parse --short HEAD)
 ```
 
 **Время**: ~2-4 минуты
@@ -316,7 +316,7 @@ kubectl get configmap trader-agent-config -n trader-agent -o yaml
 pip install -r requirements.txt
 
 # Пересобрать без кеша
-docker build --no-cache -t ghcr.io/themacroeconomicdao/trader-agent:main -f Dockerfile .
+docker build --no-cache -t ghcr.io/themacroeconomicdao/bybit-ai-trader:main -f Dockerfile .
 ```
 
 ### Проблема 2: "ImagePullBackOff" в Kubernetes
@@ -325,7 +325,7 @@ docker build --no-cache -t ghcr.io/themacroeconomicdao/trader-agent:main -f Dock
 
 ```bash
 # Проверить что образ существует в registry
-docker manifest inspect ghcr.io/themacroeconomicdao/trader-agent:main
+docker manifest inspect ghcr.io/themacroeconomicdao/bybit-ai-trader:main
 
 # Проверить imagePullSecrets
 kubectl get secret -n trader-agent ghcr-secret
@@ -420,16 +420,16 @@ echo "✅ Docker работает"
 echo "🔨 Собираю образ (5-8 минут)..."
 COMMIT_HASH=$(git rev-parse --short HEAD)
 docker build \
-  -t ghcr.io/themacroeconomicdao/trader-agent:main \
-  -t ghcr.io/themacroeconomicdao/trader-agent:latest \
-  -t ghcr.io/themacroeconomicdao/trader-agent:$COMMIT_HASH \
+  -t ghcr.io/themacroeconomicdao/bybit-ai-trader:main \
+  -t ghcr.io/themacroeconomicdao/bybit-ai-trader:latest \
+  -t ghcr.io/themacroeconomicdao/bybit-ai-trader:$COMMIT_HASH \
   -f Dockerfile .
 echo "✅ Образ собран"
 
 # 5. Push в registry
 echo "📤 Пушу в registry..."
-docker push ghcr.io/themacroeconomicdao/trader-agent:main
-docker push ghcr.io/themacroeconomicdao/trader-agent:latest
+docker push ghcr.io/themacroeconomicdao/bybit-ai-trader:main
+docker push ghcr.io/themacroeconomicdao/bybit-ai-trader:latest
 echo "✅ Образ запушен"
 
 # 6. Deploy в Kubernetes
@@ -546,8 +546,8 @@ git reset --hard <PREVIOUS_COMMIT_HASH>
 git push origin main --force
 
 # 3. Пересобрать и задеплоить
-docker build -t ghcr.io/themacroeconomicdao/trader-agent:main -f Dockerfile .
-docker push ghcr.io/themacroeconomicdao/trader-agent:main
+docker build -t ghcr.io/themacroeconomicdao/bybit-ai-trader:main -f Dockerfile .
+docker push ghcr.io/themacroeconomicdao/bybit-ai-trader:main
 kubectl rollout restart cronjob/trader-agent-analyzer -n trader-agent
 ```
 
@@ -556,7 +556,7 @@ kubectl rollout restart cronjob/trader-agent-analyzer -n trader-agent
 ```bash
 # Использовать старый образ
 kubectl set image cronjob/trader-agent-analyzer \
-  trader-agent=ghcr.io/themacroeconomicdao/trader-agent:<OLD_TAG> \
+  trader-agent=ghcr.io/themacroeconomicdao/bybit-ai-trader:<OLD_TAG> \
   -n trader-agent
 ```
 
@@ -566,8 +566,8 @@ kubectl set image cronjob/trader-agent-analyzer \
 
 ```bash
 # Быстрая пересборка и деплой
-docker build -t ghcr.io/themacroeconomicdao/trader-agent:main -f Dockerfile . && \
-docker push ghcr.io/themacroeconomicdao/trader-agent:main && \
+docker build -t ghcr.io/themacroeconomicdao/bybit-ai-trader:main -f Dockerfile . && \
+docker push ghcr.io/themacroeconomicdao/bybit-ai-trader:main && \
 kubectl rollout restart cronjob/trader-agent-analyzer -n trader-agent
 
 # Посмотреть логи ошибок
@@ -591,8 +591,8 @@ kubectl get cronjob -n trader-agent
 
 1. `cd /Users/Gyber/GYBERNATY-ECOSYSTEM/TRADER-AGENT`
 2. `git checkout main && git pull origin main`
-3. `docker build -t ghcr.io/themacroeconomicdao/trader-agent:main -f Dockerfile .`
-4. `docker push ghcr.io/themacroeconomicdao/trader-agent:main`
+3. `docker build -t ghcr.io/themacroeconomicdao/bybit-ai-trader:main -f Dockerfile .`
+4. `docker push ghcr.io/themacroeconomicdao/bybit-ai-trader:main`
 5. `kubectl apply -f k8s/secrets.yaml` (если секреты обновлялись)
 6. `kubectl rollout restart cronjob/trader-agent-analyzer -n trader-agent`
 7. `kubectl create job --from=cronjob/trader-agent-analyzer manual-test-$(date +%s) -n trader-agent`

@@ -15,10 +15,12 @@ spec:
             app: trader-agent
             component: analyzer
         spec:
+          imagePullSecrets:
+          - name: ghcr-secret
           restartPolicy: OnFailure
           containers:
           - name: trader-agent
-            image: ghcr.io/themacroeconomicdao/trader-agent:main
+            image: ghcr.io/themacroeconomicdao/bybit-ai-trader:main
             imagePullPolicy: Always
             command: ["python", "-m", "autonomous_agent.main"]
             env:
