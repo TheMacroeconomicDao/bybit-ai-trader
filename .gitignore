@@ -58,3 +58,6 @@ data/
 backtest_results/
 *.db
 *.sqlite
+
+# MCP config with secrets
+.roo/
