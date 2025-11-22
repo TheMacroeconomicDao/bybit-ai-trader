@@ -7,6 +7,16 @@ import asyncio
 from typing import Dict, List, Any, Optional
 from loguru import logger
 
+# Импорты для advanced features
+try:
+    from .whale_detector import WhaleDetector
+    from .volume_profile import VolumeProfileAnalyzer
+    from .session_manager import SessionManager
+except ImportError:
+    from whale_detector import WhaleDetector
+    from volume_profile import VolumeProfileAnalyzer
+    from session_manager import SessionManager
+
 
 class MarketScanner:
     """Сканер рынка для поиска торговых возможностей"""
@@ -14,7 +24,13 @@ class MarketScanner:
     def __init__(self, bybit_client, technical_analysis):
         self.client = bybit_client
         self.ta = technical_analysis
-        logger.info("Market Scanner initialized")
+        
+        # Advanced modules
+        self.whale_detector = WhaleDetector(bybit_client)
+        self.volume_profile = VolumeProfileAnalyzer(bybit_client)
+        self.session_manager = SessionManager()
+        
+        logger.info("Market Scanner initialized with advanced modules")
     
     async def scan_market(
         self,
@@ -23,7 +39,7 @@ class MarketScanner:
         auto_track: bool = False,
         signal_tracker: Optional[Any] = None,
         track_limit: int = 3
-    ) -> List[Dict[str, Any]]:
+    ) -> Dict[str, Any]:
         """
         Универсальное сканирование рынка по критериям
         
@@ -35,238 +51,302 @@ class MarketScanner:
             track_limit: Количество топ сигналов для записи (по умолчанию 3)
             
         Returns:
-            Список активов, соответствующих критериям
+            Dict с ключами:
+            - success: bool
+            - opportunities: List[Dict] или []
+            - error: Optional[str]
+            - scanned_count: int
+            - found_count: int
         """
-        logger.info(f"Scanning market with criteria: {criteria}")
-        
-        # 1. Get BTC Analysis first
         try:
-            btc_analysis = await self.ta.analyze_asset("BTC/USDT", timeframes=["1h", "4h"])
-            btc_trend = btc_analysis.get('timeframes', {}).get('4h', {}).get('trend', {}).get('direction', 'neutral')
-        except Exception as e:
-            logger.warning(f"Failed to analyze BTC: {e}")
-            btc_trend = "neutral"
-            btc_analysis = {}
-
-        # 2. Get Account Balance for dynamic risk management
-        # ВАЖНО: Balance используется для position sizing, но НЕ блокирует анализ
-        account_balance = None
-        try:
-            account_info = await self.client.get_account_info()
-            account_balance = float(account_info.get("balance", {}).get("total", 0.0))
+            logger.info(f"Scanning market with criteria: {criteria}")
             
-            if account_balance is None or account_balance <= 0:
-                logger.warning(f"⚠️ Invalid account balance: {account_balance}. Position sizing will be unavailable.")
-                account_balance = None
-            else:
-                logger.info(f"✅ Account balance retrieved: ${account_balance:.2f}")
-                
-        except Exception as e:
-            logger.warning(f"⚠️ Cannot get wallet balance: {e}. Continuing without position sizing.")
-            logger.warning("   Analysis will work, but position sizes won't be calculated.")
-            account_balance = None
-            # НЕ прерываем выполнение - продолжаем анализ
-            
-        # 3. Get Open Positions for correlation check
-        open_positions_symbols = []
-        try:
-            open_positions_data = await self.client.get_open_positions()
-            open_positions_symbols = [p['symbol'] for p in open_positions_data]
-            if open_positions_symbols:
-                logger.info(f"Found open positions: {open_positions_symbols}. Will check correlation.")
-        except Exception as e:
-            logger.warning(f"Failed to get open positions: {e}")
-        
-        # Получаем все тикеры
-        all_tickers = await self.client.get_all_tickers(
-            market_type=criteria.get('market_type', 'spot')
-        )
-        
-        # Проверяем, что получили данные
-        if not all_tickers or len(all_tickers) == 0:
-            logger.error("No tickers received from API - this indicates a critical error")
-            raise Exception("API Error: No tickers received from Bybit API. Cannot perform market scan without market data.")
-        
-        # Фильтрация по базовым критериям
-        filtered = []
-        
-        for ticker in all_tickers:
-            # Минимальный объём
-            min_volume = criteria.get('min_volume_24h', 100000)
-            if ticker['volume_24h'] < min_volume:
-                continue
-            
-            # Диапазон изменения цены
-            price_range = criteria.get('price_change_range')
-            if price_range:
-                change = ticker['change_24h']
-                if change < price_range[0] or change > price_range[1]:
-                    continue
-            
-            filtered.append(ticker)
-        
-        # Детальный анализ для отфильтрованных с параллелизацией
-        # Ограничиваем количество для анализа (топ по объёму)
-        candidates = filtered[:min(limit * 5, 100)]  # Максимум 100 кандидатов (было 50)
-        
-        # Параллельный анализ с ограничением одновременных запросов
-        semaphore = asyncio.Semaphore(10)  # Максимум 10 параллельно (было 5)
-        
-        async def analyze_ticker(ticker: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-            """Анализ одного тикера с обработкой ошибок"""
-            
-            # Skip if already in open positions
-            if ticker['symbol'] in open_positions_symbols:
-                return None
-                
-            async with semaphore:
-                try:
-                    # Correlation Check
-                    if open_positions_symbols:
-                        is_correlated = False
-                        for pos_symbol in open_positions_symbols:
-                            corr = await self.ta.get_correlation(ticker['symbol'], pos_symbol)
-                            if corr > 0.7:
-                                # logger.debug(f"Skipping {ticker['symbol']} - high correlation ({corr:.2f}) with {pos_symbol}")
-                                is_correlated = True
-                                break
-                        if is_correlated:
-                            return None
-
-                    analysis = await self.ta.analyze_asset(
-                        ticker['symbol'],
-                        timeframes=["1h", "4h"],
-                        include_patterns=True
-                    )
-                    
-                    # Проверка индикаторных критериев
-                    indicator_criteria = criteria.get('indicators', {})
-                    if not self._check_indicator_criteria(analysis, indicator_criteria):
-                        return None
-                    
-                    # Entry plan (FIRST) - Pass account_balance
-                    # ВАЖНО: Если баланс недоступен, entry_plan будет с предупреждением
-                    entry_plan = self._generate_entry_plan(analysis, ticker, account_balance)
-                    
-                    # Scoring (SECOND) - Pass risk_reward from plan
-                    score_data = self._calculate_opportunity_score(analysis, ticker, btc_trend, entry_plan)
-                    score = score_data["total"]
-                    
-                    return {
-                        "symbol": ticker['symbol'],
-                        "current_price": ticker['price'],
-                        "change_24h": ticker['change_24h'],
-                        "volume_24h": ticker['volume_24h'],
-                        "score": score,
-                        "score_breakdown": score_data["breakdown"],
-                        "probability": self._estimate_probability(score, analysis),
-                        "entry_plan": entry_plan,
-                        "analysis": analysis,
-                        "why": self._generate_reasoning(analysis, score)
-                    }
-                except Exception as e:
-                    logger.warning(f"Error analyzing {ticker['symbol']}: {e}")
-                    return None
-        
-        # Параллельный анализ всех кандидатов
-        tasks = [analyze_ticker(ticker) for ticker in candidates]
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-        
-        # Фильтруем успешные результаты и исключения
-        opportunities = []
-        for result in results:
-            if isinstance(result, Exception):
-                logger.warning(f"Task failed with exception: {result}")
-                continue
-            if result is not None:
-                opportunities.append(result)
-        
-        # Сортировка по score
-        opportunities.sort(key=lambda x: x['score'], reverse=True)
-        
-        # Ранний выход: если уже нашли достаточно качественных (score >= 7.0)
-        high_quality = [opp for opp in opportunities if opp['score'] >= 7.0]
-        if len(high_quality) >= limit:
-            logger.info(f"Found {len(high_quality)} high-quality opportunities, returning top {limit}")
-            final_opportunities = high_quality[:limit]
-        else:
-            final_opportunities = opportunities[:limit]
-        
-        # Автоматическая запись топ-N сигналов в tracker
-        if auto_track and signal_tracker and final_opportunities:
+            # 1. Get BTC Analysis first
             try:
-                tracked_count = 0
-                for opp in final_opportunities[:track_limit]:
-                    # Проверяем что есть entry_plan с необходимыми данными
-                    entry_plan = opp.get('entry_plan', {})
-                    if not entry_plan:
-                        continue
+                btc_analysis = await self.ta.analyze_asset("BTC/USDT", timeframes=["1h", "4h"])
+                btc_trend = btc_analysis.get('timeframes', {}).get('4h', {}).get('trend', {}).get('direction', 'neutral')
+            except Exception as e:
+                logger.warning(f"Failed to analyze BTC: {e}")
+                btc_trend = "neutral"
+                btc_analysis = {}
+
+            # 2. Get Account Balance for dynamic risk management
+            # ВАЖНО: Balance используется для position sizing, но НЕ блокирует анализ
+            account_balance = None
+            try:
+                account_info = await self.client.get_account_info()
+                account_balance = float(account_info.get("balance", {}).get("total", 0.0))
+                
+                if account_balance is None or account_balance <= 0:
+                    logger.warning(f"⚠️ Invalid account balance: {account_balance}. Position sizing will be unavailable.")
+                    account_balance = None
+                else:
+                    logger.info(f"✅ Account balance retrieved: ${account_balance:.2f}")
                     
-                    entry_price = entry_plan.get('entry_price')
-                    stop_loss = entry_plan.get('stop_loss')
-                    take_profit = entry_plan.get('take_profit')
-                    side = entry_plan.get('side', 'long')
-                    
-                    if not all([entry_price, stop_loss, take_profit]):
-                        continue
-                    
-                    # Нормализуем symbol
-                    symbol = opp.get('symbol', '').replace('/', '')
-                    if not symbol:
-                        continue
-                    
-                    # Извлекаем дополнительные данные
-                    analysis = opp.get('analysis', {})
-                    score = opp.get('score', 0)
-                    probability = opp.get('probability', 0.5)
-                    
-                    # Извлекаем timeframe
-                    timeframe = None
-                    if 'timeframes' in analysis:
-                        for tf in ["4h", "1h", "15m"]:
-                            if tf in analysis['timeframes']:
-                                timeframe = tf
-                                break
-                    
-                    # Извлекаем паттерны
-                    pattern_type = None
-                    pattern_name = None
-                    if 'patterns' in analysis:
-                        patterns = analysis['patterns']
-                        if patterns:
-                            first_pattern = patterns[0] if isinstance(patterns, list) else list(patterns.values())[0]
-                            if isinstance(first_pattern, dict):
-                                pattern_type = first_pattern.get('type')
-                                pattern_name = first_pattern.get('name')
-                    
-                    # Записываем сигнал
-                    try:
-                        signal_id = await signal_tracker.record_signal(
-                            symbol=symbol,
-                            side=side.lower(),
-                            entry_price=float(entry_price),
-                            stop_loss=float(stop_loss),
-                            take_profit=float(take_profit),
-                            confluence_score=float(score),
-                            probability=float(probability),
-                            analysis_data=analysis,
-                            timeframe=timeframe,
-                            pattern_type=pattern_type,
-                            pattern_name=pattern_name
-                        )
-                        tracked_count += 1
-                        logger.info(f"✅ Auto-tracked signal from scan_market: {signal_id} for {symbol} {side}")
-                    except Exception as e:
-                        logger.warning(f"Failed to track signal for {symbol}: {e}")
+            except Exception as e:
+                logger.warning(f"⚠️ Cannot get wallet balance: {e}. Continuing without position sizing.")
+                logger.warning("   Analysis will work, but position sizes won't be calculated.")
+                account_balance = None
+                # НЕ прерываем выполнение - продолжаем анализ
+                
+            # 3. Get Open Positions for correlation check
+            open_positions_symbols = []
+            try:
+                open_positions_data = await self.client.get_open_positions()
+                open_positions_symbols = [p['symbol'] for p in open_positions_data]
+                if open_positions_symbols:
+                    logger.info(f"Found open positions: {open_positions_symbols}. Will check correlation.")
+            except Exception as e:
+                logger.warning(f"Failed to get open positions: {e}")
+            
+            # Получаем все тикеры
+            try:
+                all_tickers = await self.client.get_all_tickers(
+                    market_type=criteria.get('market_type', 'spot')
+                )
+            except Exception as e:
+                logger.error(f"Failed to get tickers: {e}")
+                return {
+                    "success": False,
+                    "opportunities": [],
+                    "error": f"Failed to fetch market tickers: {str(e)}",
+                    "scanned_count": 0,
+                    "found_count": 0
+                }
+            
+            # Проверяем, что получили данные
+            if not all_tickers or len(all_tickers) == 0:
+                logger.error("No tickers received from API")
+                return {
+                    "success": False,
+                    "opportunities": [],
+                    "error": "API Error: No tickers received from Bybit API",
+                    "scanned_count": 0,
+                    "found_count": 0
+                }
+            
+            # Фильтрация по базовым критериям
+            filtered = []
+            
+            for ticker in all_tickers:
+                # Минимальный объём
+                min_volume = criteria.get('min_volume_24h', 100000)
+                if ticker['volume_24h'] < min_volume:
+                    continue
+                
+                # Диапазон изменения цены
+                price_range = criteria.get('price_change_range')
+                if price_range:
+                    change = ticker['change_24h']
+                    if change < price_range[0] or change > price_range[1]:
                         continue
                 
-                if tracked_count > 0:
-                    logger.info(f"✅ Auto-tracked {tracked_count} signals from scan_market")
-            except Exception as e:
-                logger.warning(f"Failed to auto-track signals from scan_market: {e}")
-                # Не прерываем выполнение
-        
-        return final_opportunities
+                filtered.append(ticker)
+            
+            # Детальный анализ для отфильтрованных с параллелизацией
+            # Ограничиваем количество для анализа (топ по объёму)
+            candidates = filtered[:min(limit * 5, 100)]  # Максимум 100 кандидатов (было 50)
+            
+            # Параллельный анализ с ограничением одновременных запросов
+            semaphore = asyncio.Semaphore(10)  # Максимум 10 параллельно (было 5)
+            
+            async def analyze_ticker(ticker: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+                """Анализ одного тикера с обработкой ошибок"""
+                
+                # Skip if already in open positions
+                if ticker['symbol'] in open_positions_symbols:
+                    return None
+                    
+                async with semaphore:
+                    try:
+                        # Correlation Check
+                        if open_positions_symbols:
+                            is_correlated = False
+                            for pos_symbol in open_positions_symbols:
+                                corr = await self.ta.get_correlation(ticker['symbol'], pos_symbol)
+                                if corr > 0.7:
+                                    # logger.debug(f"Skipping {ticker['symbol']} - high correlation ({corr:.2f}) with {pos_symbol}")
+                                    is_correlated = True
+                                    break
+                            if is_correlated:
+                                return None
+
+                        analysis = await self.ta.analyze_asset(
+                            ticker['symbol'],
+                            timeframes=["1h", "4h"],
+                            include_patterns=True
+                        )
+                        
+                        # Проверка индикаторных критериев
+                        indicator_criteria = criteria.get('indicators', {})
+                        if not self._check_indicator_criteria(analysis, indicator_criteria):
+                            return None
+                        
+                        # Whale Analysis (опционально, если enabled и volume достаточен)
+                        enable_whale_analysis = criteria.get('include_whale_analysis', False)
+                        if enable_whale_analysis and ticker.get('volume_24h', 0) > 5000000:
+                            try:
+                                whale_data = await self.whale_detector.detect_whale_activity(ticker['symbol'])
+                                analysis['whale_analysis'] = whale_data
+                                logger.debug(f"Whale analysis added for {ticker['symbol']}")
+                            except Exception as e:
+                                logger.warning(f"Failed whale analysis for {ticker['symbol']}: {e}")
+                        
+                        # Volume Profile (для топ по volume или если enabled)
+                        enable_volume_profile = criteria.get('include_volume_profile', False)
+                        if enable_volume_profile or (enable_whale_analysis and ticker.get('volume_24h', 0) > 5000000):
+                            try:
+                                vp_data = await self.volume_profile.calculate_volume_profile(
+                                    ticker['symbol'],
+                                    timeframe="4h"
+                                )
+                                # Добавляем VP в h4 data для использования в scoring
+                                if '4h' in analysis.get('timeframes', {}):
+                                    analysis['timeframes']['4h']['volume_profile'] = vp_data
+                                logger.debug(f"Volume profile added for {ticker['symbol']}")
+                            except Exception as e:
+                                logger.warning(f"Failed volume profile for {ticker['symbol']}: {e}")
+                        
+                        # Entry plan (FIRST) - Pass account_balance
+                        # ВАЖНО: Если баланс недоступен, entry_plan будет с предупреждением
+                        entry_plan = self._generate_entry_plan(analysis, ticker, account_balance)
+                        
+                        # Scoring (SECOND) - Pass risk_reward from plan
+                        score_data = self._calculate_opportunity_score(analysis, ticker, btc_trend, entry_plan)
+                        score = score_data["total"]
+                        
+                        return {
+                            "symbol": ticker['symbol'],
+                            "current_price": ticker['price'],
+                            "change_24h": ticker['change_24h'],
+                            "volume_24h": ticker['volume_24h'],
+                            "score": score,
+                            "score_breakdown": score_data["breakdown"],
+                            "probability": self._estimate_probability(score, analysis),
+                            "entry_plan": entry_plan,
+                            "analysis": analysis,
+                            "why": self._generate_reasoning(analysis, score)
+                        }
+                    except Exception as e:
+                        logger.warning(f"Error analyzing {ticker['symbol']}: {e}")
+                        return None
+            
+            # Параллельный анализ всех кандидатов
+            tasks = [analyze_ticker(ticker) for ticker in candidates]
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            
+            # Фильтруем успешные результаты и исключения
+            opportunities = []
+            for result in results:
+                if isinstance(result, Exception):
+                    logger.warning(f"Task failed with exception: {result}")
+                    continue
+                if result is not None:
+                    opportunities.append(result)
+            
+            # Сортировка по score
+            opportunities.sort(key=lambda x: x['score'], reverse=True)
+            
+            # Ранний выход: если уже нашли достаточно качественных (score >= 7.0)
+            high_quality = [opp for opp in opportunities if opp['score'] >= 7.0]
+            if len(high_quality) >= limit:
+                logger.info(f"Found {len(high_quality)} high-quality opportunities, returning top {limit}")
+                final_opportunities = high_quality[:limit]
+            else:
+                final_opportunities = opportunities[:limit]
+            
+            # Автоматическая запись топ-N сигналов в tracker
+            if auto_track and signal_tracker and final_opportunities:
+                try:
+                    tracked_count = 0
+                    for opp in final_opportunities[:track_limit]:
+                        # Проверяем что есть entry_plan с необходимыми данными
+                        entry_plan = opp.get('entry_plan', {})
+                        if not entry_plan:
+                            continue
+                        
+                        entry_price = entry_plan.get('entry_price')
+                        stop_loss = entry_plan.get('stop_loss')
+                        take_profit = entry_plan.get('take_profit')
+                        side = entry_plan.get('side', 'long')
+                        
+                        if not all([entry_price, stop_loss, take_profit]):
+                            continue
+                        
+                        # Нормализуем symbol
+                        symbol = opp.get('symbol', '').replace('/', '')
+                        if not symbol:
+                            continue
+                        
+                        # Извлекаем дополнительные данные
+                        analysis = opp.get('analysis', {})
+                        score = opp.get('score', 0)
+                        probability = opp.get('probability', 0.5)
+                        
+                        # Извлекаем timeframe
+                        timeframe = None
+                        if 'timeframes' in analysis:
+                            for tf in ["4h", "1h", "15m"]:
+                                if tf in analysis['timeframes']:
+                                    timeframe = tf
+                                    break
+                        
+                        # Извлекаем паттерны
+                        pattern_type = None
+                        pattern_name = None
+                        if 'patterns' in analysis:
+                            patterns = analysis['patterns']
+                            if patterns:
+                                first_pattern = patterns[0] if isinstance(patterns, list) else list(patterns.values())[0]
+                                if isinstance(first_pattern, dict):
+                                    pattern_type = first_pattern.get('type')
+                                    pattern_name = first_pattern.get('name')
+                        
+                        # Записываем сигнал
+                        try:
+                            signal_id = await signal_tracker.record_signal(
+                                symbol=symbol,
+                                side=side.lower(),
+                                entry_price=float(entry_price),
+                                stop_loss=float(stop_loss),
+                                take_profit=float(take_profit),
+                                confluence_score=float(score),
+                                probability=float(probability),
+                                analysis_data=analysis,
+                                timeframe=timeframe,
+                                pattern_type=pattern_type,
+                                pattern_name=pattern_name
+                            )
+                            tracked_count += 1
+                            logger.info(f"✅ Auto-tracked signal from scan_market: {signal_id} for {symbol} {side}")
+                        except Exception as e:
+                            logger.warning(f"Failed to track signal for {symbol}: {e}")
+                            continue
+                    
+                    if tracked_count > 0:
+                        logger.info(f"✅ Auto-tracked {tracked_count} signals from scan_market")
+                except Exception as e:
+                    logger.warning(f"Failed to auto-track signals from scan_market: {e}")
+            
+            # ✅ SUCCESS RESPONSE
+            return {
+                "success": True,
+                "opportunities": final_opportunities,
+                "error": None,
+                "scanned_count": len(candidates),
+                "found_count": len(final_opportunities)
+            }
+            
+        except Exception as e:
+            # ✅ ERROR RESPONSE (не бросаем исключение!)
+            logger.error(f"Error in scan_market: {e}", exc_info=True)
+            return {
+                "success": False,
+                "opportunities": [],
+                "error": str(e),
+                "scanned_count": 0,
+                "found_count": 0
+            }
     
     def _check_indicator_criteria(self, analysis: Dict, criteria: Dict) -> bool:
         """Проверка индикаторных критериев"""
@@ -515,46 +595,93 @@ class MarketScanner:
         breakdown['structure'] = structure_score
         score += structure_score
         
-        # === BONUSES (2 points) ===
+        # === BONUSES & ADVANCED (6 points) ===
         
-        # 11. R:R ≥ 2.5 (0-1)
+        # 11. Liquidity Grab (0-1)
+        grab_score = 0.0
+        grabs = h4_data.get('liquidity_grabs', [])
+        if is_long and any(g['type'] == 'bullish_grab' for g in grabs):
+            grab_score = 1.0 if grabs[0].get('strength') == 'strong' else 0.5
+        elif is_short and any(g['type'] == 'bearish_grab' for g in grabs):
+            grab_score = 1.0 if grabs[0].get('strength') == 'strong' else 0.5
+        breakdown['liquidity_grab'] = grab_score
+        score += grab_score
+        
+        # 12. Session Timing (0-1)
+        session_score = 0.0
+        session = self.session_manager.get_current_session()
+        if session == "overlap": session_score = 1.0
+        elif session in ["european", "us"]: session_score = 0.75
+        elif session == "asian": session_score = 0.25
+        breakdown['session'] = session_score
+        score += session_score
+        
+        # 13. R:R ≥2.5 (0-1)
         rr_score = 0.0
         if entry_plan:
-            risk_reward = entry_plan.get('risk_reward', 0)
-            if risk_reward >= 3.0: rr_score = 1.0
-            elif risk_reward >= 2.5: rr_score = 0.75
-            elif risk_reward >= 2.0: rr_score = 0.5
-        
+            rr = entry_plan.get('risk_reward', 0)
+            if rr >= 3.0: rr_score = 1.0
+            elif rr >= 2.5: rr_score = 0.75
+            elif rr >= 2.0: rr_score = 0.5
         breakdown['risk_reward'] = rr_score
         score += rr_score
         
-        # 12. ADX > 25 (0-1)
+        # 14. ADX >25 (0-1)
         adx = h4_data.get('indicators', {}).get('adx', {}).get('adx', 0)
-        adx_score = 0.0
-        if adx > 30: adx_score = 1.0
-        elif adx > 25: adx_score = 0.75
-        elif adx > 20: adx_score = 0.5
-        
+        adx_score = 1.0 if adx > 30 else 0.75 if adx > 25 else 0.5 if adx > 20 else 0.0
         breakdown['trend_strength'] = adx_score
         score += adx_score
         
-        # Ограничиваем score в диапазоне 0-15
-        final_score = min(15.0, max(0.0, score))
+        # 15. Whale Activity (0-1) - НОВЫЙ!
+        whale_score = 0.0
+        whale_data = analysis.get('whale_analysis', {})
+        if whale_data:
+            activity = whale_data.get('whale_activity', 'neutral')
+            flow = whale_data.get('flow_direction', 'neutral')
+            
+            if is_long and activity == "accumulation" and flow in ["bullish", "strong_bullish"]:
+                whale_score = 1.0
+            elif is_short and activity == "distribution" and flow in ["bearish", "strong_bearish"]:
+                whale_score = 1.0
+            elif (is_long and flow == "bullish") or (is_short and flow == "bearish"):
+                whale_score = 0.5
+        breakdown['whale'] = whale_score
+        score += whale_score
+        
+        # 16. Volume Profile (0-1) - НОВЫЙ!
+        vp_score = 0.0
+        vp_data = h4_data.get('volume_profile', {})
+        if vp_data:
+            position = vp_data.get('current_position', 'unknown')
+            near_poc = vp_data.get('confluence_with_poc', False)
+            
+            if is_long and (position == "below_va" or near_poc):
+                vp_score = 1.0
+            elif is_short and (position == "above_va" or near_poc):
+                vp_score = 1.0
+            elif position == "in_va":
+                vp_score = 0.5
+        breakdown['volume_profile'] = vp_score
+        score += vp_score
+        
+        # НОВЫЙ MAXIMUM: 20 points
+        final_score = min(20.0, max(0.0, score))
         
         # Логируем финальный score
         symbol = ticker.get('symbol', 'UNKNOWN')
-        logger.info(f"{symbol}: 15-point score = {final_score:.2f}/15")
+        logger.info(f"{symbol}: 20-point score = {final_score:.2f}/20")
         
-        # Добавляем warning если score низкий
+        # Обновленные warnings для 20-point
         warning = None
-        if final_score < 7.0:
-            warning = f"⚠️ Score {final_score:.1f}/15 too low - not recommended"
-        elif final_score < 10.0:
-            warning = f"⚠️ Score {final_score:.1f}/15 below recommended minimum (need 10.0+)"
+        if final_score < 10.0:
+            warning = f"⚠️ Score {final_score:.1f}/20 too low"
+        elif final_score < 13.0:
+            warning = f"⚠️ Score {final_score:.1f}/20 below recommended (need 13.0+)"
         
         return {
             "total": final_score,
             "breakdown": breakdown,
+            "system": "20-point-advanced",
             "blocked": False,
             "reason": None,
             "warning": warning
@@ -713,204 +840,413 @@ class MarketScanner:
         self,
         market_type: str = "spot",
         min_volume_24h: float = 1000000
-    ) -> List[Dict[str, Any]]:
+    ) -> Dict[str, Any]:
         """
-        Найти перепроданные активы (RSI < 30) с fallback на более мягкие критерии
+        Найти перепроданные активы (RSI < 30)
         
-        Args:
-            market_type: "spot" или "futures"
-            min_volume_24h: Минимальный объём за 24ч
-            
         Returns:
-            Список перепроданных активов
+            Dict с ключами:
+            - success: bool
+            - opportunities: List[Dict] или []
+            - error: Optional[str]
         """
-        logger.info(f"Finding oversold assets on {market_type}")
-        
-        # Сначала строгие критерии (RSI < 30)
-        strict_criteria = {
-            "market_type": market_type,
-            "min_volume_24h": min_volume_24h,
-            "indicators": {
-                "rsi_range": [0, 30]
-            }
-        }
-        
-        results = await self.scan_market(strict_criteria, limit=10)
-        
-        # Если мало результатов - смягчаем критерии (RSI < 35)
-        if len(results) < 5:
-            logger.info(f"Only {len(results)} results with RSI < 30, trying softer criteria (RSI < 35)")
-            soft_criteria = {
+        try:
+            logger.info(f"Finding oversold assets on {market_type}")
+            
+            # Strict criteria (RSI < 30)
+            strict_criteria = {
                 "market_type": market_type,
                 "min_volume_24h": min_volume_24h,
                 "indicators": {
-                    "rsi_range": [0, 35]
+                    "rsi_range": [0, 30]
                 }
             }
-            soft_results = await self.scan_market(soft_criteria, limit=10)
             
-            # Объединяем результаты, убирая дубликаты
-            seen_symbols = {r['symbol'] for r in results}
-            for r in soft_results:
-                if r['symbol'] not in seen_symbols:
-                    results.append(r)
-                    seen_symbols.add(r['symbol'])
+            results = await self.scan_market(strict_criteria, limit=10)
             
-            # Сортируем по score
-            results.sort(key=lambda x: x['score'], reverse=True)
-        
-        return results[:10]
+            # ✅ Проверяем, что scan_market вернул Dict
+            if not isinstance(results, dict):
+                logger.error(f"scan_market returned invalid type: {type(results)}")
+                return {
+                    "success": False,
+                    "opportunities": [],
+                    "error": "Internal error: scan_market returned invalid response"
+                }
+            
+            # ✅ Если scan_market не succeeded, возвращаем его ошибку
+            if not results.get("success"):
+                return results
+            
+            opportunities = results.get("opportunities", [])
+            
+            # If few results - soften criteria (RSI < 35)
+            if len(opportunities) < 5:
+                logger.info(f"Only {len(opportunities)} results with RSI < 30, trying softer criteria (RSI < 35)")
+                soft_criteria = {
+                    "market_type": market_type,
+                    "min_volume_24h": min_volume_24h,
+                    "indicators": {
+                        "rsi_range": [0, 35]
+                    }
+                }
+                soft_results = await self.scan_market(soft_criteria, limit=10)
+                
+                if soft_results.get("success"):
+                    soft_opportunities = soft_results.get("opportunities", [])
+                    
+                    # Merge results, remove duplicates
+                    seen_symbols = {opp['symbol'] for opp in opportunities}
+                    for opp in soft_opportunities:
+                        if opp['symbol'] not in seen_symbols:
+                            opportunities.append(opp)
+                            seen_symbols.add(opp['symbol'])
+                    
+                    # Sort by score
+                    opportunities.sort(key=lambda x: x['score'], reverse=True)
+            
+            # ✅ SUCCESS RESPONSE
+            return {
+                "success": True,
+                "opportunities": opportunities[:10],
+                "error": None
+            }
+            
+        except Exception as e:
+            # ✅ ERROR RESPONSE
+            logger.error(f"Error in find_oversold_assets: {e}", exc_info=True)
+            return {
+                "success": False,
+                "opportunities": [],
+                "error": str(e)
+            }
     
     async def find_overbought_assets(
         self,
         market_type: str = "spot",
         min_volume_24h: float = 1000000
-    ) -> List[Dict[str, Any]]:
+    ) -> Dict[str, Any]:
         """
         Найти перекупленные активы (RSI > 70) для SHORT позиций
         
-        Args:
-            market_type: "spot" или "futures"
-            min_volume_24h: Минимальный объём за 24ч
-            
         Returns:
-            Список перекупленных активов (шорты)
+            Dict с ключами:
+            - success: bool
+            - opportunities: List[Dict] или []
+            - error: Optional[str]
         """
-        logger.info(f"Finding overbought assets on {market_type}")
-        
-        # Сначала строгие критерии (RSI > 70)
-        strict_criteria = {
-            "market_type": market_type,
-            "min_volume_24h": min_volume_24h,
-            "indicators": {
-                "rsi_range": [70, 100]
-            }
-        }
-        
-        results = await self.scan_market(strict_criteria, limit=10)
-        
-        # Если мало результатов - смягчаем критерии (RSI > 65)
-        if len(results) < 5:
-            logger.info(f"Only {len(results)} results with RSI > 70, trying softer criteria (RSI > 65)")
-            soft_criteria = {
+        try:
+            logger.info(f"Finding overbought assets on {market_type}")
+            
+            # Strict criteria (RSI > 70)
+            strict_criteria = {
                 "market_type": market_type,
                 "min_volume_24h": min_volume_24h,
                 "indicators": {
-                    "rsi_range": [65, 100]
+                    "rsi_range": [70, 100]
                 }
             }
-            soft_results = await self.scan_market(soft_criteria, limit=10)
             
-            # Объединяем результаты, убирая дубликаты
-            seen_symbols = {r['symbol'] for r in results}
-            for r in soft_results:
-                if r['symbol'] not in seen_symbols:
-                    results.append(r)
-                    seen_symbols.add(r['symbol'])
+            results = await self.scan_market(strict_criteria, limit=10)
             
-            # Сортируем по score
-            results.sort(key=lambda x: x['score'], reverse=True)
-        
-        return results[:10]
+            if not isinstance(results, dict):
+                return {
+                    "success": False,
+                    "opportunities": [],
+                    "error": "Internal error: scan_market returned invalid response"
+                }
+            
+            if not results.get("success"):
+                return results
+            
+            opportunities = results.get("opportunities", [])
+            
+            # If few results - soften criteria (RSI > 65)
+            if len(opportunities) < 5:
+                logger.info(f"Only {len(opportunities)} results with RSI > 70, trying softer criteria (RSI > 65)")
+                soft_criteria = {
+                    "market_type": market_type,
+                    "min_volume_24h": min_volume_24h,
+                    "indicators": {
+                        "rsi_range": [65, 100]
+                    }
+                }
+                soft_results = await self.scan_market(soft_criteria, limit=10)
+                
+                if soft_results.get("success"):
+                    soft_opportunities = soft_results.get("opportunities", [])
+                    
+                    seen_symbols = {opp['symbol'] for opp in opportunities}
+                    for opp in soft_opportunities:
+                        if opp['symbol'] not in seen_symbols:
+                            opportunities.append(opp)
+                            seen_symbols.add(opp['symbol'])
+                    
+                    opportunities.sort(key=lambda x: x['score'], reverse=True)
+            
+            return {
+                "success": True,
+                "opportunities": opportunities[:10],
+                "error": None
+            }
+            
+        except Exception as e:
+            logger.error(f"Error in find_overbought_assets: {e}", exc_info=True)
+            return {
+                "success": False,
+                "opportunities": [],
+                "error": str(e)
+            }
     
     async def find_breakout_opportunities(
         self,
         market_type: str = "spot",
         min_volume_24h: float = 1000000
-    ) -> List[Dict[str, Any]]:
+    ) -> Dict[str, Any]:
         """
-        Найти возможности пробоя (BB squeeze) с параллелизацией
+        Найти возможности пробоя (BB squeeze)
         
-        Args:
-            market_type: "spot" или "futures"
-            min_volume_24h: Минимальный объём
-            
         Returns:
-            Список активов готовых к пробою
+            Dict с ключами:
+            - success: bool
+            - opportunities: List[Dict] или []
+            - error: Optional[str]
         """
-        logger.info(f"Finding breakout opportunities on {market_type}")
-        
-        # Получаем все тикеры
-        all_tickers = await self.client.get_all_tickers(market_type)
-        
-        # Фильтруем по объёму и ограничиваем количество
-        filtered = [
-            t for t in all_tickers 
-            if t['volume_24h'] >= min_volume_24h
-        ][:100]  # Максимум 100 для анализа (было 50)
-        
-        # Параллельный анализ
-        semaphore = asyncio.Semaphore(10)  # Увеличено с 5 до 10
-        
-        async def check_breakout(ticker: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-            """Проверка одного тикера на BB squeeze"""
-            async with semaphore:
-                try:
-                    analysis = await self.ta.analyze_asset(
-                        ticker['symbol'],
-                        timeframes=["4h"],
-                        include_patterns=False
-                    )
-                    
-                    h4_data = analysis['timeframes'].get('4h', {})
-                    bb = h4_data.get('indicators', {}).get('bollinger_bands', {})
-                    
-                    # Проверка BB squeeze
-                    if bb.get('squeeze', False):
-                        score = self._calculate_opportunity_score(analysis, ticker)
+        try:
+            logger.info(f"Finding breakout opportunities on {market_type}")
+            
+            # Get BTC trend for scoring
+            try:
+                btc_analysis = await self.ta.analyze_asset("BTC/USDT", timeframes=["4h"])
+                btc_trend = btc_analysis.get('timeframes', {}).get('4h', {}).get('trend', {}).get('direction', 'neutral')
+            except Exception as e:
+                logger.warning(f"Failed to analyze BTC: {e}")
+                btc_trend = "neutral"
+            
+            # Get account balance for entry plan
+            account_balance = None
+            try:
+                account_info = await self.client.get_account_info()
+                account_balance = float(account_info.get("balance", {}).get("total", 0.0))
+                if account_balance is None or account_balance <= 0:
+                    account_balance = None
+            except Exception as e:
+                logger.warning(f"Cannot get wallet balance: {e}")
+                account_balance = None
+            
+            # Get all tickers
+            try:
+                all_tickers = await self.client.get_all_tickers(market_type)
+            except Exception as e:
+                logger.error(f"Failed to get tickers: {e}")
+                return {
+                    "success": False,
+                    "opportunities": [],
+                    "error": f"Failed to fetch tickers: {str(e)}"
+                }
+            
+            # Filter by volume and limit
+            filtered = [
+                t for t in all_tickers 
+                if t['volume_24h'] >= min_volume_24h
+            ][:100]
+            
+            # Parallel analysis
+            semaphore = asyncio.Semaphore(10)
+            
+            async def check_breakout(ticker: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+                """Check one ticker for BB squeeze"""
+                async with semaphore:
+                    try:
+                        analysis = await self.ta.analyze_asset(
+                            ticker['symbol'],
+                            timeframes=["4h"],
+                            include_patterns=False
+                        )
                         
-                        if score >= 6.0:
-                            return {
-                                "symbol": ticker['symbol'],
-                                "current_price": ticker['price'],
-                                "bb_width": bb.get('width', 0),
-                                "score": score,
-                                "type": "BB_SQUEEZE_BREAKOUT",
-                                "why": f"BB Squeeze detected (width: {bb.get('width', 0):.2f}%). Готовится к сильному движению."
-                            }
-                except Exception as e:
-                    logger.warning(f"Error analyzing {ticker['symbol']}: {e}")
-                
-                return None
-        
-        # Параллельный анализ
-        tasks = [check_breakout(ticker) for ticker in filtered]
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-        
-        # Фильтруем успешные результаты
-        opportunities = []
-        for result in results:
-            if isinstance(result, Exception):
-                continue
-            if result is not None:
-                opportunities.append(result)
-        
-        opportunities.sort(key=lambda x: x['score'], reverse=True)
-        return opportunities[:10]
+                        h4_data = analysis['timeframes'].get('4h', {})
+                        bb = h4_data.get('indicators', {}).get('bollinger_bands', {})
+                        
+                        # Check BB squeeze
+                        if bb.get('squeeze', False):
+                            # Generate entry plan before scoring
+                            entry_plan = self._generate_entry_plan(analysis, ticker, account_balance)
+                            
+                            # Calculate score
+                            score_data = self._calculate_opportunity_score(analysis, ticker, btc_trend, entry_plan)
+                            score = score_data["total"]
+                            
+                            if score >= 6.0:
+                                return {
+                                    "symbol": ticker['symbol'],
+                                    "current_price": ticker['price'],
+                                    "bb_width": bb.get('width', 0),
+                                    "score": score,
+                                    "score_breakdown": score_data["breakdown"],
+                                    "probability": self._estimate_probability(score, analysis),
+                                    "entry_plan": entry_plan,
+                                    "type": "BB_SQUEEZE_BREAKOUT",
+                                    "why": f"BB Squeeze detected (width: {bb.get('width', 0):.2f}%). Готовится к сильному движению."
+                                }
+                    except Exception as e:
+                        logger.warning(f"Error analyzing {ticker['symbol']}: {e}")
+                    
+                    return None
+            
+            # Parallel analysis
+            tasks = [check_breakout(ticker) for ticker in filtered]
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            
+            # Filter successful results
+            opportunities = []
+            for result in results:
+                if isinstance(result, Exception):
+                    continue
+                if result is not None:
+                    opportunities.append(result)
+            
+            opportunities.sort(key=lambda x: x['score'], reverse=True)
+            
+            return {
+                "success": True,
+                "opportunities": opportunities[:10],
+                "error": None
+            }
+            
+        except Exception as e:
+            logger.error(f"Error in find_breakout_opportunities: {e}", exc_info=True)
+            return {
+                "success": False,
+                "opportunities": [],
+                "error": str(e)
+            }
     
     async def find_trend_reversals(
         self,
         market_type: str = "spot",
         min_volume_24h: float = 1000000
-    ) -> List[Dict[str, Any]]:
+    ) -> Dict[str, Any]:
         """
         Найти возможности разворота тренда (divergence)
         
-        Args:
-            market_type: "spot" или "futures"  
-            min_volume_24h: Минимальный объём
-            
         Returns:
-            Список активов с сигналами разворота
+            Dict с ключами:
+            - success: bool
+            - opportunities: List[Dict] или []
+            - error: Optional[str]
         """
-        logger.info(f"Finding trend reversals on {market_type}")
+        try:
+            logger.info(f"Finding trend reversals on {market_type}")
+            
+            # TODO: Implement divergence detector
+            # For now, use general scan
+            criteria = {
+                "market_type": market_type,
+                "min_volume_24h": min_volume_24h
+            }
+            
+            results = await self.scan_market(criteria, limit=10)
+            
+            if not isinstance(results, dict):
+                return {
+                    "success": False,
+                    "opportunities": [],
+                    "error": "Internal error: scan_market returned invalid response"
+                }
+            
+            return results
+            
+        except Exception as e:
+            logger.error(f"Error in find_trend_reversals: {e}", exc_info=True)
+            return {
+                "success": False,
+                "opportunities": [],
+                "error": str(e)
+            }
+    
+    async def find_orb_opportunities(
+        self,
+        market_type: str = "spot",
+        min_volume_24h: float = 1000000
+    ) -> Dict[str, Any]:
+        """
+        Найти Opening Range Breakout возможности
         
-        # TODO: Реализовать детектор divergence
-        # Требует сравнения price movement с RSI/MACD movement
+        Best timing: European (08:00-10:00), US (13:30-15:30) UTC
+        Win Rate: 65-75%
         
-        criteria = {
-            "market_type": market_type,
-            "min_volume_24h": min_volume_24h
-        }
+        Returns:
+            Dict с ключами:
+            - success: bool
+            - opportunities: List[Dict] или []
+            - error: Optional[str]
+        """
+        try:
+            from .orb_strategy import OpeningRangeBreakout
+        except ImportError:
+            from orb_strategy import OpeningRangeBreakout
         
-        return await self.scan_market(criteria, limit=10)
+        try:
+            logger.info(f"Finding ORB opportunities on {market_type}")
+            
+            orb = OpeningRangeBreakout(self.client, self.ta)
+            
+            # Получаем все тикеры
+            try:
+                all_tickers = await self.client.get_all_tickers(market_type)
+            except Exception as e:
+                logger.error(f"Failed to get tickers: {e}")
+                return {
+                    "success": False,
+                    "opportunities": [],
+                    "error": f"Failed to fetch tickers: {str(e)}"
+                }
+            
+            filtered = [t for t in all_tickers if t.get('volume_24h', 0) >= min_volume_24h]
+            filtered.sort(key=lambda x: x.get('volume_24h', 0), reverse=True)
+            
+            opportunities = []
+            
+            # Проверяем топ-30 по объему
+            for ticker in filtered[:30]:
+                try:
+                    symbol = ticker.get('symbol', '')
+                    if not symbol:
+                        continue
+                    
+                    setup = await orb.detect_orb_setup(symbol)
+                    
+                    if setup.get('has_setup'):
+                        opportunities.append({
+                            "symbol": symbol,
+                            "type": "ORB_BREAKOUT",
+                            "score": 11.0 if setup.get('strength') == 'strong' else 9.0,
+                            "probability": setup.get('confidence', 0.65),
+                            "entry_plan": {
+                                "side": setup.get('side'),
+                                "entry_price": setup.get('entry_price'),
+                                "stop_loss": setup.get('stop_loss'),
+                                "take_profit": setup.get('take_profit'),
+                                "risk_reward": setup.get('risk_reward')
+                            },
+                            "orb_details": setup,
+                            "price": ticker.get('price', 0),
+                            "volume_24h": ticker.get('volume_24h', 0)
+                        })
+                except Exception as e:
+                    logger.warning(f"ORB check failed for {ticker.get('symbol', 'UNKNOWN')}: {e}")
+            
+            opportunities.sort(key=lambda x: x['score'], reverse=True)
+            
+            return {
+                "success": True,
+                "opportunities": opportunities[:10],
+                "error": None
+            }
+            
+        except Exception as e:
+            logger.error(f"Error in find_orb_opportunities: {e}", exc_info=True)
+            return {
+                "success": False,
+                "opportunities": [],
+                "error": str(e)
+            }

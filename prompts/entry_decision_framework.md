@@ -8,7 +8,7 @@
 
 ## ЭТАП 1: Confluence Scoring (Оценка Слияния Факторов)
 
-### Scoring Matrix
+### 20-Point Advanced Matrix 2025
 
 Оцени каждый фактор по шкале:
 
@@ -16,21 +16,39 @@
 ┌─────────────────────────────────────────────┐
 │ ФАКТОР                        │ БАЛЛЫ       │
 ├─────────────────────────────────────────────┤
+│ CLASSIC TA (6 points):                      │
 │ 1. Trend Alignment (3-4 TF)   │ 0-2 points  │
 │ 2. Multiple Indicators (5+)   │ 0-2 points  │
-│ 3. Strong S/R Level           │ 0-1 point   │
-│ 4. Volume Confirmation        │ 0-1 point   │
-│ 5. Pattern >70% Reliability   │ 0-1 point   │
-│ 6. R:R ≥ 1:2                  │ 0-1 point   │
-│ 7. Favorable Market Conditions│ 0-1 point   │
-│ 8. BTC Supports Direction     │ 0-1 point   │
-│ 9. Positive Sentiment         │ 0-1 point   │
-│ 10. On-Chain Supports (bonus) │ 0-1 point   │
+│ 3. Pattern >70% Reliability   │ 0-1 point   │
+│ 4. Strong S/R Level           │ 0-1 point   │
 ├─────────────────────────────────────────────┤
-│ TOTAL                         │ 0-12 points │
+│ ORDER FLOW (4 points):                      │
+│ 5. CVD Divergence Present     │ 0-2 points  │
+│ 6. Aggressive Ratio >60%      │ 0-1 point   │
+│ 7. Volume Confirmation        │ 0-1 point   │
+├─────────────────────────────────────────────┤
+│ SMART MONEY (4 points):                     │
+│ 8. Order Block Zone           │ 0-1 point   │
+│ 9. FVG Fill Opportunity       │ 0-1 point   │
+│ 10. BOS/ChoCh Confirmation    │ 0-1 point   │
+│ 11. Liquidity Grab Detection  │ 0-1 point   │
+├─────────────────────────────────────────────┤
+│ BONUSES (3 points):                         │
+│ 12. Liquidity Grab Happened   │ 0-1 point   │
+│ 13. Session Timing Optimal    │ 0-1 point   │
+│ 14. BTC Supports Direction    │ 0-1 point   │
+├─────────────────────────────────────────────┤
+│ ADVANCED (3 points):                        │
+│ 15. Whale Activity Detected   │ 0-1 point   │
+│ 16. Volume Profile POC/VA     │ 0-1 point   │
+│ 17. Market Structure Break    │ 0-1 point   │
+├─────────────────────────────────────────────┤
+│ TOTAL                         │ 0-20 points │
 └─────────────────────────────────────────────┘
 
-МИНИМУМ ДЛЯ ВХОДА: 8.0 points
+МИНИМУМ ДЛЯ ВХОДА: 13.0/20 (65%) - Recommended
+STRONG setup: 16.0/20 (80%)
+EXCELLENT setup: 18.0/20 (90%)
 ```
 
 ### Детальные Критерии
@@ -109,11 +127,54 @@
 0.0: Negative sentiment or FUD
 ```
 
-**10. On-Chain (0-1 BONUS):**
+**11. Liquidity Grab Detection (0-1):**
 ```
-1.0: Strong on-chain confirmation
-0.5: Some on-chain support
-0.0: No data или neutral
+1.0: Clear stop hunt detected (wick through S/R)
+0.5: Possible liquidity grab
+0.0: No liquidity grab
+```
+
+**12. Liquidity Grab Happened (0-1 BONUS):**
+```
+1.0: Stop hunt completed, reversal confirmed
+0.5: Partial stop hunt
+0.0: No stop hunt
+```
+
+**13. Session Timing (0-1 BONUS):**
+```
+1.0: Optimal session (US/London open)
+0.5: Good session timing
+0.0: Low liquidity hours
+```
+
+**14. BTC Support (0-1 BONUS):**
+```
+1.0: BTC strong в том же direction (leading)
+0.75: BTC stable/neutral
+0.5: BTC slight против (caution)
+0.0: BTC strongly против (SKIP alts)
+```
+
+**15. Whale Activity (0-1 ADVANCED):**
+```
+1.0: Strong whale accumulation/distribution
+0.5: Moderate whale activity
+0.0: No whale activity detected
+```
+
+**16. Volume Profile (0-1 ADVANCED):**
+```
+1.0: Price at POC or Value Area edge
+0.5: Near significant VP level
+0.0: No VP significance
+```
+
+**17. Market Structure Break (0-1 ADVANCED):**
+```
+1.0: Clear BOS/ChoCh confirmed
+0.5: Structure break forming
+0.0: No structure break
 ```
 
 ---
@@ -124,13 +185,14 @@
 
 ```
 Base Probability Formula:
-P_base = 0.50 + (Confluence Score - 8.0) × 0.05
+P_base = 0.50 + (Confluence Score - 13.0) × 0.025
 
 Examples:
-Score 8.0 → P = 0.50 + 0 = 50%
-Score 9.0 → P = 0.50 + 0.05 = 55%
-Score 10.0 → P = 0.50 + 0.10 = 60%
-Score 12.0 → P = 0.50 + 0.20 = 70%
+Score 13.0 → P = 0.50 + 0 = 50%
+Score 14.0 → P = 0.50 + 0.025 = 52.5%
+Score 16.0 → P = 0.50 + 0.075 = 57.5%
+Score 18.0 → P = 0.50 + 0.125 = 62.5%
+Score 20.0 → P = 0.50 + 0.175 = 67.5%
 ```
 
 ### Корректировка на Strategy Type
@@ -184,8 +246,8 @@ Rounds: Nearest 5%
 ```
 Setup: BTC Trend Following Pullback
 
-Confluence Score: 9.5/10
-P_base = 0.50 + (9.5 - 8.0) × 0.05 = 0.575
+Confluence Score: 16.5/20
+P_base = 0.50 + (16.5 - 13.0) × 0.025 = 0.5875
 
 Strategy: Trend Following
 P_adj = +0.10
@@ -193,12 +255,12 @@ P_adj = +0.10
 Pattern: Bullish Engulfing (historical 68%)
 P_pattern = (0.68 - 0.70) × 0.5 = -0.01
 
-P_final = 0.575 + 0.10 - 0.01 = 0.665
-Rounded: 65%
+P_final = 0.5875 + 0.10 - 0.01 = 0.6775
+Rounded: 68%
 
-But wait! Confluence 9.5 очень высокий:
+But wait! Confluence 16.5/20 очень высокий:
 Bonus: +5% для exceptional confluence
-P_final = 70%
+P_final = 73%
 
 ✅ STRONG PROBABILITY
 ```
@@ -322,11 +384,11 @@ At 100% Safe Time:
 ```
 START
   ↓
-Confluence Score ≥ 8.0?
+Confluence Score ≥ 13.0/20 (65%)?
   ├─ NO → ❌ REJECT ("Confluence недостаточен")
   └─ YES
       ↓
-Win Probability ≥ 65%?
+Win Probability ≥ 70%?
   ├─ NO → ❌ REJECT ("Вероятность низкая")
   └─ YES
       ↓
@@ -359,7 +421,7 @@ Psychological check OK?
 **TIER 1: EXCELLENT (Recommend агрессивно)**
 ```
 Requirements:
-• Confluence: 9.0+
+• Confluence: 18.0+/20 (90%+)
 • Probability: 75%+
 • R:R: 1:2.5+
 • EV: 2.0× Risk+
@@ -370,7 +432,7 @@ Position size: 2% risk (максимум для $30)
 **TIER 2: STRONG (Recommend confidently)**
 ```
 Requirements:
-• Confluence: 8.5-8.9
+• Confluence: 16.0-17.9/20 (80-89%)
 • Probability: 70-74%
 • R:R: 1:2 to 1:2.5
 • EV: 1.5-2.0× Risk
@@ -381,8 +443,8 @@ Position size: 1.5% risk
 **TIER 3: MODERATE (Recommend осторожно)**
 ```
 Requirements:
-• Confluence: 8.0-8.4
-• Probability: 65-69%
+• Confluence: 13.0-15.9/20 (65-79%)
+• Probability: 70%+
 • R:R: 1:2
 • EV: 1.5× Risk
 
@@ -393,8 +455,8 @@ Action: Recommend но mention это minimum threshold
 **TIER 4: WEAK (DON'T recommend)**
 ```
 Characteristics:
-• Confluence: <8.0
-• Probability: <65%
+• Confluence: <13.0/20 (<65%)
+• Probability: <70%
 • R:R: <1:2
 • EV: <1.5× Risk
 
@@ -412,25 +474,43 @@ Action: SKIP и объясни почему
 ETH/USDT DECISION ANALYSIS
 ═══════════════════════════════════════
 
-CONFLUENCE SCORING:
+CONFLUENCE SCORING (20-Point Matrix):
+
+CLASSIC TA (5.5/6):
 1. Trend alignment (4/4 TF): 2.0 ✅
 2. Indicators (7 confirmed): 2.0 ✅
-3. S/R level (EMA200 + historical): 1.0 ✅
-4. Volume (2.1x average): 1.0 ✅
-5. Pattern (Bull Flag 78%): 1.0 ✅
-6. R:R (1:2.8): 1.0 ✅
-7. Market conditions (all good): 1.0 ✅
-8. BTC (uptrend, supports): 1.0 ✅
-9. Sentiment (positive): 0.75 ✅
-10. On-chain (accumulation): 0.5 ✅
+3. Pattern (Bull Flag 78%): 1.0 ✅
+4. S/R level (EMA200 + historical): 0.5 ✅
 
-TOTAL: 11.25/12 ✅✅✅
+ORDER FLOW (3.5/4):
+5. CVD divergence: 2.0 ✅
+6. Aggressive ratio (68%): 1.0 ✅
+7. Volume (2.1x average): 0.5 ✅
+
+SMART MONEY (3.0/4):
+8. Order Block zone: 1.0 ✅
+9. FVG opportunity: 1.0 ✅
+10. BOS confirmed: 1.0 ✅
+11. Liquidity grab: 0.0
+
+BONUSES (2.0/3):
+12. Liquidity grab happened: 1.0 ✅
+13. Session timing (US open): 1.0 ✅
+14. BTC (uptrend, supports): 0.0
+
+ADVANCED (1.0/3):
+15. Whale activity: 0.5
+16. Volume Profile: 0.5
+17. Market structure: 0.0
+
+TOTAL: 15.0/20 (75%) ✅✅✅
 
 PROBABILITY:
-Base: 0.50 + (11.25 - 8) × 0.05 = 66.25%
-Strategy (Momentum): +5% = 71.25%
-Pattern (78% historical): +4% = 75.25%
-Final: 75% ✅
+Base: 0.50 + (15.0 - 13.0) × 0.025 = 55%
+Strategy (Momentum): +5% = 60%
+Pattern (78% historical): +4% = 64%
+Confluence bonus (15/20): +6% = 70%
+Final: 70% ✅
 
 R:R CALCULATION:
 Entry: $3,000
@@ -451,15 +531,15 @@ Safe: 4 hours
 Max: 6 hours ✅
 
 DECISION TREE:
-✅ Confluence ≥8.0 (11.25)
-✅ Probability ≥65% (75%)
-✅ R:R ≥1:2 (1:2)
+✅ Confluence ≥13.0/20 (15.0/20 = 75%)
+✅ Probability ≥70% (70%)
+✅ R:R ≥1:2 (1:2.8)
 ✅ EV ≥1.5×Risk (1.25×, acceptable)
 ✅ BTC supports
 ✅ Checklist passed
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-✅ APPROVED - TIER 1 (EXCELLENT)
+✅ APPROVED - TIER 2 (STRONG)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 Recommended position: 2% risk ($0.60)
@@ -474,36 +554,48 @@ Confidence: VERY HIGH
 BTC/USDT DECISION ANALYSIS
 ═══════════════════════════════════════
 
-CONFLUENCE SCORING:
+CONFLUENCE SCORING (20-Point Matrix):
+
+CLASSIC TA (2.0/6):
 1. Trend alignment (2/4 TF): 1.0
 2. Indicators (4 confirmed): 1.0
-3. S/R level (weak): 0.5
-4. Volume (0.9x average): 0.0 ❌
-5. Pattern (none clear): 0.0 ❌
-6. R:R (1:1.8): 0.5
-7. Market conditions (mixed): 0.5
-8. BTC (self, N/A): 0.5
-9. Sentiment (neutral): 0.5
-10. On-chain (no data): 0.0
+3. Pattern (none clear): 0.0 ❌
+4. S/R level (weak): 0.0 ❌
 
-TOTAL: 5.0/12 ❌
+ORDER FLOW (0.5/4):
+5. CVD divergence: 0.0 ❌
+6. Aggressive ratio: 0.0
+7. Volume (0.9x average): 0.5
+
+SMART MONEY (0.0/4):
+8-11. No smart money signals: 0.0 ❌
+
+BONUSES (0.5/3):
+12-13. No bonuses: 0.0
+14. BTC (self, N/A): 0.5
+
+ADVANCED (0.0/3):
+15-17. No advanced signals: 0.0 ❌
+
+TOTAL: 3.0/20 (15%) ❌
 
 PROBABILITY:
-Base: 0.50 + (5.0 - 8) × 0.05 = 35%
+Base: 0.50 + (3.0 - 13.0) × 0.025 = 25% (minimum cap)
 Too low! ❌
 
 DECISION TREE:
-❌ Confluence <8.0 (только 5.0)
+❌ Confluence <13.0/20 (только 3.0/20 = 15%)
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 ❌ REJECTED
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 Reasoning:
-• Confluence слишком низкий (5/12)
+• Confluence слишком низкий (3.0/20 = 15%)
 • Volume не подтверждает
 • Нет чёткого pattern
-• Вероятность только 35%
+• Нет Order Flow/Smart Money сигналов
+• Вероятность только 25%
 
 Recommendation:
 "Setup слишком weak. Ждём более clear signals.
@@ -519,21 +611,21 @@ breakout в 4-6 часов. Буду мониторить."
 ### Based on Confluence & Probability
 
 ```
-Tier 1 (Confluence 9.0+, Prob 75%+):
+Tier 1 (Confluence 18.0+/20, Prob 75%+):
 → Position risk: 2% депозита ($0.60 для $30)
 → Maximum allowed size
 → Highest confidence
 
-Tier 2 (Confluence 8.5-8.9, Prob 70-74%):
+Tier 2 (Confluence 16.0-17.9/20, Prob 70-74%):
 → Position risk: 1.5% депозита ($0.45 для $30)
 → Standard strong setup
 
-Tier 3 (Confluence 8.0-8.4, Prob 65-69%):
+Tier 3 (Confluence 13.0-15.9/20, Prob 70%+):
 → Position risk: 1% депозита ($0.30 для $30)
 → Conservative entry
 → Minimum acceptable
 
-Tier 4 (Confluence <8.0, Prob <65%):
+Tier 4 (Confluence <13.0/20, Prob <70%):
 → Position risk: 0% (НЕ ВХОДИМ)
 → Wait for better setup
 ```
@@ -583,19 +675,19 @@ Tier 4 (Confluence <8.0, Prob <65%):
 
 ```
 Opportunity A: ETH
-• Confluence: 9.0
+• Confluence: 17.0/20 (85%)
 • Probability: 72%
 • R:R: 1:2.5
 • EV: $1.10
 
 Opportunity B: SOL
-• Confluence: 8.5
+• Confluence: 16.5/20 (82.5%)
 • Probability: 68%
 • R:R: 1:3
 • EV: $0.95
 
 Opportunity C: AVAX
-• Confluence: 8.0
+• Confluence: 13.5/20 (67.5%)
 • Probability: 65%
 • R:R: 1:2
 • EV: $0.80
@@ -621,8 +713,8 @@ AVAX skip unless first two not available."
 ═══════════════════════════════════════
 
 📊 CONFLUENCE ANALYSIS:
-Total Score: [X]/10
-Breakdown: [list key factors]
+Total Score: [X]/20 ([X]%)
+Breakdown: [list key factors by category]
 
 📈 PROBABILITY ESTIMATION:
 Win Probability: [X]%
@@ -702,7 +794,7 @@ Systematic approach = consistent results
 **5. Learn and Adapt**
 ```
 Track decisions и outcomes
-Если setup score 8.5 failed → analyze why
+Если setup score 16.5/20 failed → analyze why
 Improve scoring model continuously
 ```
 

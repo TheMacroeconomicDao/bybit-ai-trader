@@ -81,3 +81,4 @@ echo "  kubectl logs -n trader-agent -l job-name -f"
 echo ""
 echo "Для проверки статуса CronJob:"
 echo "  kubectl get cronjob -n trader-agent"
+

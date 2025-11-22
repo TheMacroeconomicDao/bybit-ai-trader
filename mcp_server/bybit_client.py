@@ -620,8 +620,9 @@ class BybitClient:
                         continue
                     else:
                         # Пробрасываем исключение вместо возврата пустых данных
-                        logger.error(f"Failed to get price for {symbol} after {max_retries} attempts")
-                        raise Exception(f"API Error: Failed to fetch price for {symbol} after {max_retries} attempts. Error: {e}")
+                        error_str = str(e).replace('{', '{{').replace('}', '}}')  # Escape braces for loguru
+                        logger.error(f"Failed to get price for {symbol} after {max_retries} attempts: {error_str}")
+                        raise Exception(f"API Error: Failed to fetch price for {symbol} after {max_retries} attempts. Error: {error_str}")
                 else:
                     # Другие ошибки - пробуем retry
                     logger.warning(f"Error getting asset price for {symbol} (attempt {attempt + 1}/{max_retries}): {e}")
@@ -629,7 +630,8 @@ class BybitClient:
                         await asyncio.sleep(retry_delay * (2 ** attempt))
                         continue
                     else:
-                        logger.error(f"Failed to get price for {symbol} after {max_retries} attempts: {e}", exc_info=True)
+                        error_str = str(e).replace('{', '{{').replace('}', '}}')  # Escape braces for loguru
+                        logger.error(f"Failed to get price for {symbol} after {max_retries} attempts: {error_str}", exc_info=True)
                         raise
     
     async def get_ohlcv(self, symbol: str, timeframe: str = "1h", limit: int = 100) -> List[List]:

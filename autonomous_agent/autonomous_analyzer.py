@@ -19,6 +19,28 @@ from mcp_server.technical_analysis import TechnicalAnalysis
 from mcp_server.market_scanner import MarketScanner
 from autonomous_agent.qwen_client import QwenClient
 
+# Advanced features imports
+try:
+    from mcp_server.whale_detector import WhaleDetector
+    from mcp_server.volume_profile import VolumeProfileAnalyzer
+    from mcp_server.session_manager import SessionManager
+    from mcp_server.ml_predictor import MLPredictor
+    ADVANCED_FEATURES_AVAILABLE = True
+except ImportError:
+    ADVANCED_FEATURES_AVAILABLE = False
+    WhaleDetector = None
+    VolumeProfileAnalyzer = None
+    SessionManager = None
+    MLPredictor = None
+
+# ORB Strategy import
+try:
+    from mcp_server.orb_strategy import OpeningRangeBreakout
+    ORB_AVAILABLE = True
+except ImportError:
+    ORB_AVAILABLE = False
+    OpeningRangeBreakout = None
+
 # Опциональный импорт для signal tracking
 try:
     from mcp_server.signal_tracker import SignalTracker
@@ -84,6 +106,25 @@ class AutonomousAnalyzer:
         self.bybit_client = BybitClient(bybit_api_key, bybit_api_secret, testnet)
         self.technical_analysis = TechnicalAnalysis(self.bybit_client)
         self.market_scanner = MarketScanner(self.bybit_client, self.technical_analysis)
+        
+        # Advanced features (Whale, Volume Profile, Session, ML Predictor)
+        self.whale_detector = None
+        self.volume_profile = None
+        self.session_manager = None
+        self.ml_predictor = None
+        if ADVANCED_FEATURES_AVAILABLE:
+            self.whale_detector = WhaleDetector(self.bybit_client)
+            self.volume_profile = VolumeProfileAnalyzer(self.bybit_client)
+            self.session_manager = SessionManager()
+            if MLPredictor:
+                self.ml_predictor = MLPredictor()
+            logger.info("Advanced features initialized (Whale, VP, Session, ML)")
+        
+        # ORB Strategy (если доступна)
+        self.orb_strategy = None
+        if ORB_AVAILABLE and OpeningRangeBreakout:
+            self.orb_strategy = OpeningRangeBreakout(self.bybit_client, self.technical_analysis)
+            logger.info("ORB Strategy initialized")
         
         # Signal tracker для контроля качества (создаём по умолчанию если доступен)
         if signal_tracker is None and SIGNAL_TRACKING_AVAILABLE:
@@ -385,30 +426,41 @@ class AutonomousAnalyzer:
         all_opportunities = []
         
         # Параллельный запуск всех типов сканирования с увеличенными лимитами
+        # Включаем advanced features если доступны (для топ активов с большим объемом)
+        enable_advanced = ADVANCED_FEATURES_AVAILABLE
+        
         tasks = [
             # Разные критерии для scan_market - увеличенные лимиты для полного охвата
             self.market_scanner.scan_market({
                 "market_type": "spot",
                 "min_volume_24h": 1000000,
-                "indicators": {"rsi_range": [0, 35]}  # Oversold
+                "indicators": {"rsi_range": [0, 35]},  # Oversold
+                "include_whale_analysis": enable_advanced,  # Для активов с volume > 5M
+                "include_volume_profile": enable_advanced
             }, limit=100),  # Увеличено с 20 до 100
             
             self.market_scanner.scan_market({
                 "market_type": "spot",
                 "min_volume_24h": 1000000,
-                "indicators": {"rsi_range": [65, 100]}  # Overbought для шортов
+                "indicators": {"rsi_range": [65, 100]},  # Overbought для шортов
+                "include_whale_analysis": enable_advanced,
+                "include_volume_profile": enable_advanced
             }, limit=100),
             
             self.market_scanner.scan_market({
                 "market_type": "spot",
                 "min_volume_24h": 1000000,
-                "indicators": {"macd_crossover": "bullish"}
+                "indicators": {"macd_crossover": "bullish"},
+                "include_whale_analysis": enable_advanced,
+                "include_volume_profile": enable_advanced
             }, limit=100),
             
             self.market_scanner.scan_market({
                 "market_type": "spot",
                 "min_volume_24h": 1000000,
-                "indicators": {"macd_crossover": "bearish"}
+                "indicators": {"macd_crossover": "bearish"},
+                "include_whale_analysis": enable_advanced,
+                "include_volume_profile": enable_advanced
             }, limit=100),
             
             # Специализированные поиски
@@ -417,6 +469,15 @@ class AutonomousAnalyzer:
             self.market_scanner.find_breakout_opportunities("spot", min_volume_24h=1000000),
             self.market_scanner.find_trend_reversals("spot", min_volume_24h=1000000)
         ]
+        
+        # Add ORB scan если в нужное время (European или US session)
+        if ORB_AVAILABLE and hasattr(self, 'orb_strategy') and self.orb_strategy and self.session_manager:
+            current_session = self.session_manager.get_current_session()
+            if current_session in ["european", "us"]:
+                tasks.append(
+                    self.market_scanner.find_orb_opportunities("spot", min_volume_24h=1000000)
+                )
+                logger.info(f"ORB scan added for {current_session} session")
         
         results = await asyncio.gather(*tasks, return_exceptions=True)
         
@@ -735,6 +796,51 @@ class AutonomousAnalyzer:
             validation_score = validation.get("score", 0)
             # Небольшой бонус (максимум +0.5)
             score += min(0.5, validation_score / 20.0)
+        
+        # Experience Logging (только логирование, без влияния на score)
+        if self.ml_predictor:
+            try:
+                # Собираем данные для логирования опыта
+                pattern_type = opp.get("pattern_type", "unknown")
+                volume_ratio = opp.get("volume_ratio", 1.0)
+                btc_aligned = (
+                    (side == "long" and btc_trend in ["bullish", "uptrend"]) or
+                    (side == "short" and btc_trend in ["bearish", "downtrend"])
+                )
+                session = self.session_manager.get_current_session() if self.session_manager else "neutral"
+                
+                # Получаем RSI из analysis
+                rsi = 50.0
+                if analysis:
+                    timeframes = analysis.get("timeframes", {})
+                    for tf_data in timeframes.values():
+                        indicators = tf_data.get("indicators", {})
+                        rsi_data = indicators.get("rsi", {})
+                        if rsi_data:
+                            rsi = rsi_data.get("rsi_14", 50.0)
+                            break
+                
+                risk_reward = opp.get("risk_reward", 2.0)
+                
+                # Логируем опыт для будущего обучения (без влияния на score)
+                experience_data = {
+                    "confluence_score": score,
+                    "pattern_type": pattern_type,
+                    "volume_ratio": volume_ratio,
+                    "btc_aligned": btc_aligned,
+                    "session": session,
+                    "rsi": rsi,
+                    "risk_reward": risk_reward,
+                    "side": side,
+                    "symbol": opp.get("symbol", "unknown")
+                }
+                
+                # Сохраняем для логирования (опыт будет записан в SignalTracker при закрытии позиции)
+                opp["experience_data"] = experience_data
+                logger.debug(f"Experience data logged for {opp.get('symbol')}: pattern={pattern_type}, score={score:.1f}")
+                
+            except Exception as e:
+                logger.warning(f"Experience logging failed: {e}")
         
         # Округляем до 0.5
         score = round(score * 2) / 2

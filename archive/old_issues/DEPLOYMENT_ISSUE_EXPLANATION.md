@@ -120,3 +120,4 @@ echo "$GHCR_TOKEN" | docker login ...
 kubectl get pods -n trader-agent
 kubectl logs -n trader-agent -l app=trader-agent
 ```
+

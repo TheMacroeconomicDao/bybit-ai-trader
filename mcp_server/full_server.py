@@ -53,6 +53,9 @@ from signal_tracker import SignalTracker
 from signal_price_monitor import SignalPriceMonitor
 from quality_metrics import QualityMetrics
 from signal_reports import SignalReports
+from whale_detector import WhaleDetector
+from volume_profile import VolumeProfileAnalyzer
+from session_manager import SessionManager
 
 
 # Настройка логирования
@@ -90,6 +93,9 @@ signal_tracker: Optional[SignalTracker] = None
 signal_monitor: Optional[SignalPriceMonitor] = None
 quality_metrics: Optional[QualityMetrics] = None
 signal_reports: Optional[SignalReports] = None
+whale_detector: Optional[WhaleDetector] = None
+volume_profile: Optional[VolumeProfileAnalyzer] = None
+session_manager: Optional[SessionManager] = None
 
 
 def load_credentials() -> Dict[str, Any]:
@@ -746,6 +752,46 @@ async def list_tools() -> List[Tool]:
                 "required": ["signal_id"]
             }
         ),
+        
+        # ═══════════════════════════════════════
+        # 🐋 ADVANCED FEATURES (Whale, VP, Session)
+        # ═══════════════════════════════════════
+        
+        Tool(
+            name="detect_whale_activity",
+            description="Анализ активности китов и крупных ордеров",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "symbol": {"type": "string", "description": "Торговая пара (например BTC/USDT)"},
+                    "lookback_trades": {"type": "integer", "default": 1000, "description": "Количество сделок для анализа"}
+                },
+                "required": ["symbol"]
+            }
+        ),
+        
+        Tool(
+            name="get_volume_profile",
+            description="Рассчитать Volume Profile с POC и Value Area",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "symbol": {"type": "string", "description": "Торговая пара"},
+                    "timeframe": {"type": "string", "default": "1h", "description": "Таймфрейм для расчета"},
+                    "lookback": {"type": "integer", "default": 100, "description": "Количество свечей"}
+                },
+                "required": ["symbol"]
+            }
+        ),
+        
+        Tool(
+            name="get_session_info",
+            description="Получить информацию о текущей торговой сессии",
+            inputSchema={
+                "type": "object",
+                "properties": {}
+            }
+        ),
     ]
 
 
@@ -841,37 +887,77 @@ async def call_tool(name: str, arguments: Any) -> List[TextContent]:
         
         # ═══ Сканирование рынка ═══
         elif name == "scan_market":
-            result = await market_scanner.scan_market(
-                criteria=arguments["criteria"],
-                limit=arguments.get("limit", 10),
-                auto_track=arguments.get("auto_track", False),
-                signal_tracker=signal_tracker if arguments.get("auto_track", False) else None,
-                track_limit=arguments.get("track_limit", 3)
-            )
+            try:
+                result = await market_scanner.scan_market(
+                    criteria=arguments["criteria"],
+                    limit=arguments.get("limit", 10),
+                    auto_track=arguments.get("auto_track", False),
+                    signal_tracker=signal_tracker if arguments.get("auto_track", False) else None,
+                    track_limit=arguments.get("track_limit", 3)
+                )
+            except Exception as e:
+                logger.error(f"Error in scan_market: {e}", exc_info=True)
+                result = {
+                    "success": False,
+                    "error": str(e),
+                    "opportunities": []
+                }
         
         elif name == "find_oversold_assets":
-            result = await market_scanner.find_oversold_assets(
-                market_type=arguments.get("market_type", "spot"),
-                min_volume_24h=arguments.get("min_volume_24h", 1000000)
-            )
+            try:
+                result = await market_scanner.find_oversold_assets(
+                    market_type=arguments.get("market_type", "spot"),
+                    min_volume_24h=arguments.get("min_volume_24h", 1000000)
+                )
+            except Exception as e:
+                logger.error(f"Error in find_oversold_assets: {e}", exc_info=True)
+                result = {
+                    "success": False,
+                    "error": str(e),
+                    "opportunities": []
+                }
         
         elif name == "find_overbought_assets":
-            result = await market_scanner.find_overbought_assets(
-                market_type=arguments.get("market_type", "spot"),
-                min_volume_24h=arguments.get("min_volume_24h", 1000000)
-            )
+            try:
+                result = await market_scanner.find_overbought_assets(
+                    market_type=arguments.get("market_type", "spot"),
+                    min_volume_24h=arguments.get("min_volume_24h", 1000000)
+                )
+            except Exception as e:
+                logger.error(f"Error in find_overbought_assets: {e}", exc_info=True)
+                result = {
+                    "success": False,
+                    "error": str(e),
+                    "opportunities": []
+                }
         
         elif name == "find_breakout_opportunities":
-            result = await market_scanner.find_breakout_opportunities(
-                market_type=arguments.get("market_type", "spot"),
-                min_volume_24h=arguments.get("min_volume_24h", 1000000)
-            )
+            try:
+                result = await market_scanner.find_breakout_opportunities(
+                    market_type=arguments.get("market_type", "spot"),
+                    min_volume_24h=arguments.get("min_volume_24h", 1000000)
+                )
+            except Exception as e:
+                logger.error(f"Error in find_breakout_opportunities: {e}", exc_info=True)
+                result = {
+                    "success": False,
+                    "error": str(e),
+                    "opportunities": []
+                }
         
         elif name == "find_trend_reversals":
-            result = await market_scanner.find_trend_reversals(
-                market_type=arguments.get("market_type", "spot"),
-                min_volume_24h=arguments.get("min_volume_24h", 1000000)
-            )
+            try:
+                result = await market_scanner.find_trend_reversals(
+                    market_type=arguments.get("market_type", "spot"),
+                    min_volume_24h=arguments.get("min_volume_24h", 1000000)
+                )
+            except Exception as e:
+                logger.error(f"Error in find_trend_reversals: {e}", exc_info=True)
+                result = {
+                    "success": False,
+                    "error": str(e),
+                    "opportunities": []
+                }
         
         # ═══ Валидация ═══
         elif name == "check_liquidity":
@@ -1443,6 +1529,60 @@ async def call_tool(name: str, arguments: Any) -> List[TextContent]:
                     "error": str(e)
                 }
         
+        # ═══ Advanced Features (Whale, VP, Session) ═══
+        elif name == "detect_whale_activity":
+            try:
+                if not whale_detector:
+                    result = {
+                        "success": False,
+                        "error": "Whale detector not initialized"
+                    }
+                else:
+                    symbol = arguments.get("symbol")
+                    lookback = arguments.get("lookback_trades", 1000)
+                    result = await whale_detector.detect_whale_activity(symbol, lookback_trades=lookback)
+            except Exception as e:
+                logger.error(f"Error in detect_whale_activity: {e}", exc_info=True)
+                result = {
+                    "success": False,
+                    "error": str(e)
+                }
+        
+        elif name == "get_volume_profile":
+            try:
+                if not volume_profile:
+                    result = {
+                        "success": False,
+                        "error": "Volume profile analyzer not initialized"
+                    }
+                else:
+                    symbol = arguments.get("symbol")
+                    timeframe = arguments.get("timeframe", "1h")
+                    lookback = arguments.get("lookback", 100)
+                    result = await volume_profile.calculate_volume_profile(symbol, timeframe, lookback)
+            except Exception as e:
+                logger.error(f"Error in get_volume_profile: {e}", exc_info=True)
+                result = {
+                    "success": False,
+                    "error": str(e)
+                }
+        
+        elif name == "get_session_info":
+            try:
+                if not session_manager:
+                    result = {
+                        "success": False,
+                        "error": "Session manager not initialized"
+                    }
+                else:
+                    result = session_manager.get_session_info()
+            except Exception as e:
+                logger.error(f"Error in get_session_info: {e}", exc_info=True)
+                result = {
+                    "success": False,
+                    "error": str(e)
+                }
+        
         elif name == "get_signal_details":
             try:
                 if not signal_tracker:
@@ -1647,6 +1787,7 @@ async def main():
     """Запуск полного trading сервера"""
     global trading_ops, technical_analysis, market_scanner, position_monitor, bybit_client
     global signal_tracker, signal_monitor, quality_metrics, signal_reports
+    global whale_detector, volume_profile, session_manager
     
     logger.info("=" * 50)
     logger.info("Starting Complete Bybit Trading MCP Server")
@@ -1735,6 +1876,11 @@ async def main():
     
     technical_analysis = TechnicalAnalysis(bybit_client)
     market_scanner = MarketScanner(bybit_client, technical_analysis)
+    
+    # Advanced modules
+    whale_detector = WhaleDetector(bybit_client)
+    volume_profile = VolumeProfileAnalyzer(bybit_client)
+    session_manager = SessionManager()
     
     position_monitor = PositionMonitor(
         api_key=bybit_creds["api_key"],

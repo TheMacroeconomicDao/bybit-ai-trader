@@ -9,7 +9,12 @@ from typing import Dict, List, Any, Optional
 from datetime import datetime
 import ta
 from loguru import logger
-from .structure_analyzer import StructureAnalyzer
+
+# Импорт StructureAnalyzer с поддержкой относительных и абсолютных импортов
+try:
+    from .structure_analyzer import StructureAnalyzer
+except ImportError:
+    from structure_analyzer import StructureAnalyzer
 
 
 class TechnicalAnalysis:
@@ -116,6 +121,9 @@ class TechnicalAnalysis:
         # Structure Analysis (BOS/ChoCh)
         structure = self.structure_analyzer.detect_structure_breaks(df)
         
+        # Liquidity Grabs (Stop Hunts)
+        liquidity_grabs = self.detect_liquidity_grabs(df)
+        
         # Генерация сигнала
         signal = self._generate_signal(indicators, trend, levels, patterns)
         
@@ -134,6 +142,7 @@ class TechnicalAnalysis:
             "order_blocks": order_blocks,
             "fair_value_gaps": fvgs,
             "structure": structure,
+            "liquidity_grabs": liquidity_grabs,
             "signal": signal
         }
     
@@ -804,6 +813,60 @@ class TechnicalAnalysis:
         
         # Возвращаем последние 3 актуальных FVG
         return active_fvgs[:3]
+    
+    def detect_liquidity_grabs(self, df: pd.DataFrame, lookback: int = 50) -> List[Dict[str, Any]]:
+        """Детекция Stop Hunts (Liquidity Grabs)"""
+        grabs = []
+        if len(df) < lookback + 5:
+            return []
+        
+        candles = df.to_dict('records')
+        current_price = candles[-1]['close']
+        
+        for i in range(lookback, len(candles) - 2):
+            candle = candles[i]
+            prev_candles = candles[i-lookback:i]
+            prev_high = max(c['high'] for c in prev_candles)
+            prev_low = min(c['low'] for c in prev_candles)
+            
+            body = abs(candle['close'] - candle['open'])
+            lower_wick = min(candle['open'], candle['close']) - candle['low']
+            upper_wick = candle['high'] - max(candle['open'], candle['close'])
+            
+            avg_vol = np.mean([c['volume'] for c in prev_candles])
+            vol_ratio = candle['volume'] / avg_vol if avg_vol > 0 else 1.0
+            
+            # Bullish grab
+            if (candle['low'] < prev_low * 0.998 and
+                candle['close'] > candle['open'] and
+                lower_wick > body * 1.5 and
+                vol_ratio > 1.2):
+                
+                next_1 = candles[i+1]
+                if next_1['close'] > next_1['open'] and next_1['close'] > candle['close']:
+                    grabs.append({
+                        "type": "bullish_grab",
+                        "spike_low": candle['low'],
+                        "strength": "strong" if vol_ratio > 1.8 else "moderate",
+                        "active": current_price > candle['close']
+                    })
+            
+            # Bearish grab
+            elif (candle['high'] > prev_high * 1.002 and
+                  candle['close'] < candle['open'] and
+                  upper_wick > body * 1.5 and
+                  vol_ratio > 1.2):
+                
+                next_1 = candles[i+1]
+                if next_1['close'] < next_1['open'] and next_1['close'] < candle['close']:
+                    grabs.append({
+                        "type": "bearish_grab",
+                        "spike_high": candle['high'],
+                        "strength": "strong" if vol_ratio > 1.8 else "moderate",
+                        "active": current_price < candle['close']
+                    })
+        
+        return [g for g in grabs if g['active']][:3]
     
     def _check_hard_stops_for_validation(self, analysis: Dict, is_long: bool, entry_timeframe: str = "5m") -> Dict:
         """
