@@ -8,6 +8,7 @@ import json
 import time
 import hashlib
 import threading
+import os
 from typing import Any, Dict, Optional, Callable
 from datetime import datetime, timedelta
 from loguru import logger
@@ -19,17 +20,27 @@ class CacheManager:
     Thread-safe для использования в async контексте
     """
     
-    def __init__(self, default_ttl: int = 60):
+    def __init__(self, default_ttl: int = 60, enabled: Optional[bool] = None):
         """
         Инициализация менеджера кэша
         
         Args:
             default_ttl: Время жизни кэша по умолчанию в секундах
+            enabled: Включить/выключить кэширование (если None - проверяет ENABLE_CACHE env)
         """
         self._cache: Dict[str, Dict[str, Any]] = {}
         self._lock = threading.RLock()
         self.default_ttl = default_ttl
-        logger.info(f"CacheManager initialized with default TTL={default_ttl}s")
+        
+        # Проверяем переменную окружения или параметр
+        if enabled is None:
+            cache_env = os.getenv("ENABLE_CACHE", "true").lower()
+            self.enabled = cache_env in ("true", "1", "yes")
+        else:
+            self.enabled = enabled
+        
+        status = "ENABLED ✅" if self.enabled else "DISABLED ⚠️"
+        logger.info(f"CacheManager initialized: {status}")
     
     def _make_key(self, function_name: str, **kwargs) -> str:
         """
@@ -65,8 +76,12 @@ class CacheManager:
             **kwargs: Параметры функции
             
         Returns:
-            Кэшированное значение или None если кэш истек/отсутствует
+            Кэшированное значение или None если кэш истек/отсутствует/отключен
         """
+        # Если кэширование отключено - всегда возвращаем None
+        if not self.enabled:
+            return None
+        
         key = self._make_key(function_name, **kwargs)
         
         with self._lock:
@@ -98,6 +113,10 @@ class CacheManager:
             ttl: Время жизни в секундах (если None - используется default_ttl)
             **kwargs: Параметры функции (для генерации ключа)
         """
+        # Если кэширование отключено - ничего не делаем
+        if not self.enabled:
+            return
+        
         key = self._make_key(function_name, **kwargs)
         ttl = ttl or self.default_ttl
         
@@ -171,8 +190,8 @@ class CacheManager:
             }
 
 
-# Глобальный экземпляр менеджера кэша
-_cache_manager = CacheManager(default_ttl=60)
+# Глобальный экземпляр менеджера кэша (использует переменную окружения ENABLE_CACHE)
+_cache_manager = CacheManager(default_ttl=300, enabled=None)  # None = проверяет ENABLE_CACHE env
 
 
 def get_cache_manager() -> CacheManager:
@@ -196,6 +215,10 @@ def cached(ttl: int = 60):
         cache = get_cache_manager()
         
         async def wrapper(*args, **kwargs):
+            # Если кэширование отключено - просто выполняем функцию
+            if not cache.enabled:
+                return await func(*args, **kwargs)
+            
             # Генерируем ключ кэша
             function_name = func.__name__
             

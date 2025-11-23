@@ -11,6 +11,10 @@ from pathlib import Path
 from typing import Optional
 from loguru import logger
 
+# Добавляем путь к корню проекта в sys.path ПЕРЕД всеми импортами
+PROJECT_ROOT = Path(__file__).parent.parent
+sys.path.insert(0, str(PROJECT_ROOT))
+
 # Загрузка переменных окружения
 try:
     from dotenv import load_dotenv
@@ -18,11 +22,9 @@ try:
 except ImportError:
     pass  # dotenv не обязателен, если переменные уже установлены
 
+# Теперь импорты работают из корня проекта
 from autonomous_agent.autonomous_analyzer import AutonomousAnalyzer
 from autonomous_agent.telegram_formatter import TelegramFormatter
-
-# Добавляем путь к mcp_server для импорта TelegramBot
-sys.path.insert(0, str(Path(__file__).parent.parent))
 from mcp_server.telegram_bot import TelegramBot
 
 
@@ -31,7 +33,8 @@ def load_config() -> dict:
     config = {}
     
     # Из переменных окружения
-    config["qwen_api_key"] = os.getenv("QWEN_API_KEY", "")
+    # ✅ Поддержка обоих вариантов для обратной совместимости
+    config["qwen_api_key"] = os.getenv("OPENROUTER_API_KEY") or os.getenv("QWEN_API_KEY", "")
     config["bybit_api_key"] = os.getenv("BYBIT_API_KEY", "")
     config["bybit_api_secret"] = os.getenv("BYBIT_API_SECRET", "")
     config["qwen_model"] = os.getenv("QWEN_MODEL", "qwen/qwen-turbo")  # OpenRouter формат модели
@@ -53,7 +56,7 @@ def load_config() -> dict:
     
     # Проверка обязательных параметров
     if not config["qwen_api_key"]:
-        raise ValueError("QWEN_API_KEY environment variable is required")
+        raise ValueError("OPENROUTER_API_KEY or QWEN_API_KEY environment variable is required")
     if not config["bybit_api_key"]:
         raise ValueError("BYBIT_API_KEY environment variable is required")
     if not config["bybit_api_secret"]:

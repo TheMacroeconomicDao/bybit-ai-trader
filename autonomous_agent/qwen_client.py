@@ -30,6 +30,17 @@ class QwenClient:
                    - qwen/qwen-max (самая мощная)
                    По умолчанию: qwen/qwen-turbo
         """
+        if not api_key:
+            raise ValueError("API key is required for Qwen client")
+        
+        # НОВАЯ ПРОВЕРКА формата ключа
+        if not api_key.startswith("sk-or-"):
+            logger.warning(
+                f"OpenRouter API key should start with 'sk-or-'. "
+                f"Your key starts with: {api_key[:10]}... "
+                f"Please verify your OPENROUTER_API_KEY"
+            )
+        
         self.api_key = api_key
         self.model = model
         self.base_url = self.BASE_URL
@@ -38,9 +49,6 @@ class QwenClient:
             "qwen/qwen-plus", 
             "qwen/qwen-max"
         ]
-        
-        if not api_key:
-            raise ValueError("API key is required for Qwen client")
         
         logger.info(f"Qwen client initialized with OpenRouter, model: {model}")
     
@@ -103,6 +111,31 @@ class QwenClient:
                     json=payload,
                     timeout=aiohttp.ClientTimeout(total=60)
                 ) as response:
+                    response_text = await response.text()
+                    
+                    # ✅ PRODUCTION-READY обработка 401
+                    if response.status == 401:
+                        error_msg = (
+                            f"❌ OpenRouter API Authentication Failed (401)\n"
+                            f"Response: {response_text}\n\n"
+                            f"SOLUTIONS:\n"
+                            f"1. Check OPENROUTER_API_KEY in .env file\n"
+                            f"2. Verify key format: should start with 'sk-or-v1-'\n"
+                            f"3. Get new key at: https://openrouter.ai/keys\n"
+                            f"4. Check account balance at: https://openrouter.ai/credits\n"
+                        )
+                        logger.error(error_msg)
+                        
+                        return {
+                            "success": False,
+                            "error": "authentication_failed",
+                            "content": "",
+                            "details": response_text,
+                            "action_required": "Check OPENROUTER_API_KEY in .env",
+                            "graceful_fallback": True,
+                            "message": "Qwen AI analysis skipped due to API authentication error"
+                        }
+                    
                     if response.status == 200:
                         data = await response.json()
                         
@@ -128,73 +161,35 @@ class QwenClient:
                             "model": data.get("model", self.model)
                         }
                     else:
-                        error_text = await response.text()
-                        logger.error(f"OpenRouter API error {response.status}: {error_text}")
+                        logger.error(f"OpenRouter API error {response.status}: {response_text}")
                         
-                        # Если модель недоступна, пробуем fallback модели
-                        if response.status == 404 or (response.status == 400 and "model" in error_text.lower()):
-                            if not hasattr(self, '_fallback_attempted'):
-                                logger.warning(f"Model {self.model} is not available, trying fallback models...")
-                                self._fallback_attempted = True
-                                
-                                # Пробуем другие модели по порядку
-                                for fallback_model in self.available_models:
-                                    if fallback_model != self.model:
-                                        logger.info(f"Trying fallback model: {fallback_model}")
-                                        fallback_payload = {
-                                            "model": fallback_model,
-                                            "messages": messages,
-                                            "temperature": temperature,
-                                            "max_tokens": max_tokens,
-                                            "top_p": top_p
-                                        }
-                                        
-                                        try:
-                                            async with session.post(
-                                                self.base_url,
-                                                headers=headers,
-                                                json=fallback_payload,
-                                                timeout=aiohttp.ClientTimeout(total=60)
-                                            ) as fallback_response:
-                                                if fallback_response.status == 200:
-                                                    fallback_data = await fallback_response.json()
-                                                    if "choices" in fallback_data and len(fallback_data["choices"]) > 0:
-                                                        content = fallback_data["choices"][0].get("message", {}).get("content", "")
-                                                        logger.info(f"Successfully used fallback model: {fallback_model}")
-                                                        if hasattr(self, '_fallback_attempted'):
-                                                            delattr(self, '_fallback_attempted')
-                                                        return {
-                                                            "success": True,
-                                                            "content": content,
-                                                            "usage": fallback_data.get("usage", {}),
-                                                            "model_used": fallback_model
-                                                        }
-                                        except Exception as e:
-                                            logger.warning(f"Fallback model {fallback_model} failed: {e}")
-                                            continue
-                                
-                                if hasattr(self, '_fallback_attempted'):
-                                    delattr(self, '_fallback_attempted')
-                        
+                        # НОВЫЙ GRACEFUL FALLBACK
                         return {
                             "success": False,
-                            "error": f"API error {response.status}: {error_text}",
-                            "content": ""
+                            "error": f"API error {response.status}",
+                            "content": "",
+                            "graceful_fallback": True,
+                            "message": f"Qwen AI analysis skipped (API error {response.status})"
                         }
+                        
         
         except asyncio.TimeoutError:
             logger.error("Qwen API request timeout")
             return {
                 "success": False,
                 "error": "Request timeout",
-                "content": ""
+                "content": "",
+                "graceful_fallback": True,
+                "message": "Qwen AI analysis skipped (timeout)"
             }
         except Exception as e:
             logger.error(f"Qwen API error: {e}", exc_info=True)
             return {
                 "success": False,
                 "error": str(e),
-                "content": ""
+                "content": "",
+                "graceful_fallback": True,
+                "message": f"Qwen AI analysis skipped ({str(e)})"
             }
     
     async def analyze_market_opportunities(

@@ -17,6 +17,150 @@ except ImportError:
     from structure_analyzer import StructureAnalyzer
 
 
+def validate_dataframe(df: pd.DataFrame, min_required: int = 20, symbol: str = "") -> Dict[str, Any]:
+    """
+    Валидация DataFrame перед анализом
+    
+    Returns:
+        Dict с результатами валидации и рекомендациями
+    """
+    if df is None or len(df) == 0:
+        return {
+            "valid": False,
+            "reason": "empty_dataframe",
+            "data_points": 0,
+            "min_required": min_required,
+            "recommendation": "skip_analysis"
+        }
+    
+    data_points = len(df)
+    
+    if data_points < min_required:
+        return {
+            "valid": False,
+            "reason": "insufficient_data",
+            "data_points": data_points,
+            "min_required": min_required,
+            "recommendation": "use_available_data_with_warnings"
+        }
+    
+    # Проверка на NaN в критических колонках
+    critical_cols = ['open', 'high', 'low', 'close', 'volume']
+    nan_counts = {col: df[col].isna().sum() for col in critical_cols if col in df.columns}
+    
+    if any(count > 0 for count in nan_counts.values()):
+        return {
+            "valid": True,
+            "data_points": data_points,
+            "warnings": {
+                "nan_values": nan_counts,
+                "recommendation": "clean_data_before_indicators"
+            }
+        }
+    
+    return {
+        "valid": True,
+        "data_points": data_points,
+        "quality": "good"
+    }
+
+
+def adaptive_window(df: pd.DataFrame, preferred_window: int) -> int:
+    """
+    Адаптивный размер окна на основе доступных данных
+    
+    Args:
+        df: DataFrame с данными
+        preferred_window: Предпочитаемый размер окна
+        
+    Returns:
+        Оптимальный размер окна
+    """
+    available = len(df)
+    
+    if available >= preferred_window:
+        return preferred_window
+    elif available >= preferred_window // 2:
+        # Используем половину, но логируем предупреждение
+        logger.warning(
+            f"Using reduced window {available} instead of {preferred_window} "
+            f"(only {available} data points available)"
+        )
+        return available
+    else:
+        # Слишком мало данных
+        logger.warning(
+            f"Insufficient data for reliable calculation: {available} points "
+            f"(need minimum {preferred_window//2})"
+        )
+        return max(2, available)  # Минимум 2 точки для любого расчета
+
+
+def safe_mean(data, default=0.0):
+    """
+    Безопасный расчет среднего с проверкой на пустые данные
+    
+    Args:
+        data: Series, list или np.ndarray для расчета среднего
+        default: Значение по умолчанию если данные пустые или невалидные
+        
+    Returns:
+        float: Среднее значение или default
+    """
+    if data is None:
+        return default
+    
+    # Для pandas Series
+    if hasattr(data, '__len__') and len(data) == 0:
+        return default
+    
+    # Для numpy arrays или lists
+    try:
+        if isinstance(data, (list, np.ndarray)):
+            if len(data) == 0:
+                return default
+            result = np.mean(data)
+        else:
+            # Для pandas Series
+            result = float(data.mean())
+        
+        # Проверка на NaN
+        if np.isnan(result):
+            return default
+        
+        return float(result)
+    except Exception:
+        return default
+
+
+def safe_rolling_mean(series, window, default=0.0):
+    """
+    Безопасный расчет rolling mean с проверкой данных
+    
+    Args:
+        series: pandas Series для расчета
+        window: Размер окна
+        default: Значение по умолчанию
+        
+    Returns:
+        float: Rolling mean или default
+    """
+    if series is None or len(series) == 0:
+        return default
+    
+    if len(series) < window:
+        # Если данных меньше окна, используем все доступные
+        return safe_mean(series, default)
+    
+    try:
+        result = float(series.rolling(window).mean().iloc[-1])
+        if np.isnan(result):
+            return default
+        return result
+    except Exception:
+        return default
+
+
 class TechnicalAnalysis:
     """Движок технического анализа"""
     
@@ -85,7 +229,7 @@ class TechnicalAnalysis:
         timeframe: str,
         include_patterns: bool
     ) -> Dict[str, Any]:
-        """Анализ на одном таймфрейме"""
+        """Анализ на одном таймфрейме с валидацией данных"""
         
         # Получаем OHLCV данные
         ohlcv = await self.client.get_ohlcv(symbol, timeframe, limit=200)
@@ -98,7 +242,27 @@ class TechnicalAnalysis:
         df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
         df.set_index('timestamp', inplace=True)
         
-        # Расчёт всех индикаторов
+        # ✅ ВАЛИДАЦИЯ ДАННЫХ
+        validation = validate_dataframe(df, min_required=20, symbol=symbol)
+        
+        if not validation["valid"]:
+            logger.warning(
+                f"{symbol} {timeframe}: {validation['reason']} "
+                f"({validation['data_points']}/{validation['min_required']} points)"
+            )
+            return {
+                "timeframe": timeframe,
+                "error": validation["reason"],
+                "data_points": validation["data_points"],
+                "min_required": validation["min_required"],
+                "message": f"Insufficient data for reliable analysis on {timeframe}"
+            }
+        
+        # Если есть предупреждения, логируем но продолжаем
+        if "warnings" in validation:
+            logger.warning(f"{symbol} {timeframe}: Data quality issues: {validation['warnings']}")
+        
+        # Расчёт всех индикаторов (теперь с гарантированно валидными данными)
         indicators = self._calculate_all_indicators(df)
         
         # Анализ тренда
@@ -127,13 +291,18 @@ class TechnicalAnalysis:
         # Генерация сигнала
         signal = self._generate_signal(indicators, trend, levels, patterns)
         
+        # ✅ ADAPTIVE расчет с учетом доступных данных
+        available_points = len(df)
+        h24_window = min(24 if timeframe == "1h" else 10, available_points)
+        
         return {
             "timeframe": timeframe,
             "current_price": float(df['close'].iloc[-1]),
             "ohlcv_summary": {
-                "high_24h": float(df['high'].tail(24 if timeframe == "1h" else 10).max()),
-                "low_24h": float(df['low'].tail(24 if timeframe == "1h" else 10).min()),
-                "volume_avg": float(df['volume'].tail(20).mean())
+                "high_24h": float(df['high'].tail(h24_window).max()) if h24_window > 0 else float(df['high'].max()),
+                "low_24h": float(df['low'].tail(h24_window).min()) if h24_window > 0 else float(df['low'].min()),
+                "volume_avg": float(df['volume'].tail(min(20, available_points)).mean()) if available_points > 0 else 0.0,
+                "data_points": available_points
             },
             "indicators": indicators,
             "trend": trend,
@@ -227,12 +396,18 @@ class TechnicalAnalysis:
             'crossover': 'bullish' if stoch.stoch().iloc[-1] > stoch.stoch_signal().iloc[-1] else 'bearish'
         }
         
-        # Volume indicators
+        # Volume indicators (строки 230-236)
+        # ✅ ADAPTIVE WINDOW для volume calculations
+        volume_window = adaptive_window(df, 20)
+        obv_series = ta.volume.on_balance_volume(df['close'], df['volume'])
+        volume_sma = df['volume'].rolling(volume_window, min_periods=1).mean()
+        
         indicators['volume'] = {
-            'obv': float(ta.volume.on_balance_volume(df['close'], df['volume']).iloc[-1]),
-            'volume_sma': float(df['volume'].rolling(20).mean().iloc[-1]),
-            'current_volume': float(df['volume'].iloc[-1]),
-            'volume_ratio': float(df['volume'].iloc[-1] / df['volume'].rolling(20).mean().iloc[-1])
+            'obv': float(obv_series.iloc[-1]) if len(obv_series) > 0 else 0.0,
+            'volume_sma': float(volume_sma.iloc[-1]) if len(volume_sma) > 0 else 0.0,
+            'current_volume': float(df['volume'].iloc[-1]) if len(df) > 0 else 0.0,
+            'volume_ratio': float(df['volume'].iloc[-1] / volume_sma.iloc[-1]) if len(volume_sma) > 0 and volume_sma.iloc[-1] > 0 else 1.0,
+            'window_used': volume_window  # Для отладки
         }
         
         # VWAP (для интрадей)
@@ -325,24 +500,32 @@ class TechnicalAnalysis:
         return clustered
     
     def _detect_patterns(self, df: pd.DataFrame) -> Dict[str, Any]:
-        """Детектор свечных паттернов"""
+        """Детектор свечных паттернов - РАСШИРЕННЫЙ"""
         
         patterns = {
             "candlestick": [],
             "chart": []
         }
         
+        if len(df) < 3:
+            return patterns
+        
         # Последние свечи для анализа
         recent = df.tail(5)
         last = recent.iloc[-1]
         prev = recent.iloc[-2] if len(recent) > 1 else None
+        prev2 = recent.iloc[-3] if len(recent) > 2 else None
         
-        # Hammer
+        # Расчет компонентов свечи
         body = abs(last['close'] - last['open'])
         lower_shadow = min(last['open'], last['close']) - last['low']
         upper_shadow = last['high'] - max(last['open'], last['close'])
+        candle_range = last['high'] - last['low']
         
-        if lower_shadow > body * 2 and upper_shadow < body * 0.5:
+        # === СУЩЕСТВУЮЩИЕ ПАТТЕРНЫ ===
+        
+        # Hammer
+        if candle_range > 0 and lower_shadow > body * 2 and upper_shadow < body * 0.5:
             patterns['candlestick'].append({
                 "name": "Hammer",
                 "type": "bullish",
@@ -351,7 +534,7 @@ class TechnicalAnalysis:
             })
         
         # Shooting Star
-        if upper_shadow > body * 2 and lower_shadow < body * 0.5:
+        if candle_range > 0 and upper_shadow > body * 2 and lower_shadow < body * 0.5:
             patterns['candlestick'].append({
                 "name": "Shooting Star",
                 "type": "bearish",
@@ -359,11 +542,24 @@ class TechnicalAnalysis:
                 "description": "Potential reversal from uptrend"
             })
         
-        # Bullish Engulfing
+        # Doji
+        if candle_range > 0 and body < candle_range * 0.1:
+            patterns['candlestick'].append({
+                "name": "Doji",
+                "type": "neutral",
+                "reliability": 0.50,
+                "description": "Indecision, potential reversal"
+            })
+        
+        # === НОВЫЕ ПАТТЕРНЫ ===
+        
         if prev is not None:
-            if (prev['close'] < prev['open'] and  # предыдущая медвежья
-                last['close'] > last['open'] and  # текущая бычья
-                last['close'] > prev['open'] and  # поглощает
+            prev_body = abs(prev['close'] - prev['open'])
+            
+            # Bullish Engulfing
+            if (prev['close'] < prev['open'] and
+                last['close'] > last['open'] and
+                last['close'] > prev['open'] and
                 last['open'] < prev['close']):
                 patterns['candlestick'].append({
                     "name": "Bullish Engulfing",
@@ -371,15 +567,43 @@ class TechnicalAnalysis:
                     "reliability": 0.70,
                     "description": "Strong reversal signal"
                 })
-        
-        # Doji
-        if body < (last['high'] - last['low']) * 0.1:
-            patterns['candlestick'].append({
-                "name": "Doji",
-                "type": "neutral",
-                "reliability": 0.50,
-                "description": "Indecision, potential reversal"
-            })
+            
+            # Bearish Engulfing
+            if (prev['close'] > prev['open'] and
+                last['close'] < last['open'] and
+                last['close'] < prev['open'] and
+                last['open'] > prev['close']):
+                patterns['candlestick'].append({
+                    "name": "Bearish Engulfing",
+                    "type": "bearish",
+                    "reliability": 0.70,
+                    "description": "Strong reversal signal"
+                })
+            
+            # Morning Star (требует 3 свечи)
+            if prev2 is not None:
+                if (prev2['close'] < prev2['open'] and  # Первая медвежья
+                    abs(prev['close'] - prev['open']) < prev_body * 0.3 and  # Вторая маленькая
+                    last['close'] > last['open'] and  # Третья бычья
+                    last['close'] > (prev2['open'] + prev2['close']) / 2):  # Закрылась выше середины первой
+                    patterns['candlestick'].append({
+                        "name": "Morning Star",
+                        "type": "bullish",
+                        "reliability": 0.75,
+                        "description": "Strong three-candle reversal pattern"
+                    })
+                
+                # Evening Star
+                if (prev2['close'] > prev2['open'] and  # Первая бычья
+                    abs(prev['close'] - prev['open']) < prev_body * 0.3 and  # Вторая маленькая
+                    last['close'] < last['open'] and  # Третья медвежья
+                    last['close'] < (prev2['open'] + prev2['close']) / 2):  # Закрылась ниже середины первой
+                    patterns['candlestick'].append({
+                        "name": "Evening Star",
+                        "type": "bearish",
+                        "reliability": 0.75,
+                        "description": "Strong three-candle reversal pattern"
+                    })
         
         return patterns
     
@@ -694,7 +918,11 @@ class TechnicalAnalysis:
             # 1. Bullish OB
             # Условие: Сильный импульс вверх (тело > 2x среднего)
             body = abs(candle['close'] - candle['open'])
-            avg_body = np.mean([abs(c['close'] - c['open']) for c in candles[i-5:i]])
+            candle_slice = candles[max(0, i-5):i]
+            if len(candle_slice) > 0:
+                avg_body = safe_mean([abs(c['close'] - c['open']) for c in candle_slice])
+            else:
+                avg_body = 0.0
             
             if (candle['close'] > candle['open'] and  # Зеленая
                 body > avg_body * 1.5 and             # Импульсная
@@ -833,7 +1061,7 @@ class TechnicalAnalysis:
             lower_wick = min(candle['open'], candle['close']) - candle['low']
             upper_wick = candle['high'] - max(candle['open'], candle['close'])
             
-            avg_vol = np.mean([c['volume'] for c in prev_candles])
+            avg_vol = safe_mean([c['volume'] for c in prev_candles]) if prev_candles else 1.0
             vol_ratio = candle['volume'] / avg_vol if avg_vol > 0 else 1.0
             
             # Bullish grab
@@ -900,65 +1128,101 @@ class TechnicalAnalysis:
             blocked = True
             details['confidence'] = confidence
         
-        # STOP #3: MACD bearish на 2+ коротких TF для LONG
+        # STOP #3: MACD bearish на 3+ коротких TF для LONG (было 2+)
         if is_long:
             bearish_count = 0
             macd_details = {}
             for tf in ['1m', '5m', '15m']:
                 tf_data = analysis.get('timeframes', {}).get(tf, {})
+                if 'error' in tf_data:  # НОВАЯ ПРОВЕРКА
+                    continue
                 macd = tf_data.get('indicators', {}).get('macd', {})
                 crossover = macd.get('crossover', 'neutral')
                 macd_details[tf] = crossover
                 if crossover == 'bearish':
                     bearish_count += 1
             
-            if bearish_count >= 2:
+            # ИЗМЕНЕНО: 3+ вместо 2+ для менее строгой фильтрации
+            if bearish_count >= 3:
                 stops.append(f"MACD bearish on {bearish_count} short timeframes")
                 blocked = True
                 details['macd'] = macd_details
         
-        # STOP #4: MACD bullish на 2+ коротких TF для SHORT
+        # STOP #4: MACD bullish на 3+ коротких TF для SHORT (было 2+)
         if not is_long:
             bullish_count = 0
             macd_details = {}
             for tf in ['1m', '5m', '15m']:
                 tf_data = analysis.get('timeframes', {}).get(tf, {})
+                if 'error' in tf_data:  # НОВАЯ ПРОВЕРКА
+                    continue
                 macd = tf_data.get('indicators', {}).get('macd', {})
                 crossover = macd.get('crossover', 'neutral')
                 macd_details[tf] = crossover
                 if crossover == 'bullish':
                     bullish_count += 1
             
-            if bullish_count >= 2:
+            # ИЗМЕНЕНО: 3+ вместо 2+
+            if bullish_count >= 3:
                 stops.append(f"MACD bullish on {bullish_count} short timeframes")
                 blocked = True
                 details['macd'] = macd_details
         
-        # STOP #5: Volume слишком низкий для скальпинга
+        # STOP #5: Volume check (обновленный)
         volume_checks = {}
+        valid_volume_found = False
+
         for tf in ['1m', '5m', '15m']:
             tf_data = analysis.get('timeframes', {}).get(tf, {})
+            if 'error' in tf_data:
+                logger.debug(f"Skipping {tf} for volume check: {tf_data.get('error')}")
+                continue
+            
             vol_data = tf_data.get('indicators', {}).get('volume', {})
-            vol_ratio = vol_data.get('volume_ratio', 1.0)
-            volume_checks[tf] = vol_ratio
-        
-        entry_vol = volume_checks.get(entry_timeframe, 1.0)
-        if entry_timeframe in ['1m', '5m'] and entry_vol < 0.5:
-            stops.append(f"Volume too low for scalping on {entry_timeframe}: {entry_vol:.2f}")
+            vol_ratio = vol_data.get('volume_ratio', 0)
+            volume_checks[tf] = {
+                'ratio': vol_ratio,
+                'window_used': vol_data.get('window_used', 20),
+                'data_points': tf_data.get('data_points', 0)
+            }
+            
+            if vol_ratio > 0.5:
+                valid_volume_found = True
+
+        # Логируем детальную информацию
+        if not valid_volume_found:
+            logger.warning(
+                f"Low volume detected for {entry_timeframe}: "
+                f"details={volume_checks}"
+            )
+
+        entry_vol = volume_checks.get(entry_timeframe, {}).get('ratio', 0)
+        if entry_timeframe in ['1m', '5m'] and not valid_volume_found and entry_vol < 0.3:
+            stops.append(
+                f"Volume too low for scalping on {entry_timeframe}: {entry_vol:.2f}"
+            )
             blocked = True
             details['volume'] = volume_checks
         
-        # STOP #6: BB Squeeze без volume confirmation
+        # STOP #6: BB Squeeze без volume confirmation (СМЯГЧЕНО)
+        squeeze_count = 0
         for tf in ['1m', '5m', '15m']:
             tf_data = analysis.get('timeframes', {}).get(tf, {})
+            if 'error' in tf_data:
+                continue
             bb = tf_data.get('indicators', {}).get('bollinger_bands', {})
             vol_data = tf_data.get('indicators', {}).get('volume', {})
             
             if bb.get('squeeze', False) and vol_data.get('volume_ratio', 1.0) < 0.5:
-                stops.append(f"BB Squeeze on {tf} without volume confirmation (vol_ratio: {vol_data.get('volume_ratio', 0):.2f})")
-                blocked = True
-                details['bb_squeeze'] = {tf: {"squeeze": True, "volume_ratio": vol_data.get('volume_ratio', 0)}}
-                break
+                squeeze_count += 1
+        
+        # ИЗМЕНЕНО: Блокируем только если squeeze на 2+ таймфреймах (было 1+)
+        if squeeze_count >= 2:
+            stops.append(
+                f"BB Squeeze on {squeeze_count} timeframes without volume confirmation"
+            )
+            blocked = True
+            details['bb_squeeze_count'] = squeeze_count
         
         return {
             "blocked": blocked,

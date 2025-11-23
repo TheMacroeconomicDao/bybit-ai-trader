@@ -39,6 +39,10 @@ class DetailedFormatter:
         all_longs = analysis_result.get("all_longs", [])
         all_shorts = analysis_result.get("all_shorts", [])
         
+        # Фильтруем пары СТЕЙБЛ/СТЕЙБЛ (исключаем только их, не пары типа BTC/USDT)
+        all_longs = [opp for opp in all_longs if not DetailedFormatter._is_stable_stable_pair(opp.get("symbol", ""))]
+        all_shorts = [opp for opp in all_shorts if not DetailedFormatter._is_stable_stable_pair(opp.get("symbol", ""))]
+        
         message += "TOP OPPORTUNITIES (After Full Market Scan)\n\n"
         
         # LONG OPPORTUNITIES
@@ -66,8 +70,10 @@ class DetailedFormatter:
         # DIRECTION COMPARISON
         longs_found = analysis_result.get("longs_found", 0)
         shorts_found = analysis_result.get("shorts_found", 0)
-        best_long_score = max([opp.get("confluence_score", 0) for opp in all_longs], default=0)
-        best_short_score = max([opp.get("confluence_score", 0) for opp in all_shorts], default=0)
+        
+        # ✅ Используем final_score напрямую (уже нормализовано)
+        best_long_score = max([opp.get("final_score", 0.0) for opp in all_longs], default=0.0)
+        best_short_score = max([opp.get("final_score", 0.0) for opp in all_shorts], default=0.0)
         
         message += "DIRECTION COMPARISON:\n\n"
         message += f"• LONG found: {longs_found} opportunities\n"
@@ -107,9 +113,53 @@ class DetailedFormatter:
         
         # System Status
         message += f"System Status: Full capacity ({total_scanned} assets scanned)\n"
-        message += "Next Update: Monitoring every 4 hours\n"
+        message += "Next Update: Monitoring every 12 hours (2 times per day)\n"
         
         return message
+    
+    @staticmethod
+    def _is_stable_stable_pair(symbol: str) -> bool:
+        """
+        Проверка, является ли пара СТЕЙБЛ/СТЕЙБЛ (исключаем только такие пары)
+        
+        НЕ исключаем:
+        - BTC/USDT, ETH/USDT (крипта/стейбл) - это нормальные торговые пары
+        
+        Исключаем:
+        - USDC/USDT, BUSD/USDT (стейбл/стейбл)
+        - USDT/TRY, USDT/BRL (стейбл/фиат) - но это уже фильтруется в market_scanner
+        
+        Args:
+            symbol: Символ пары (например "BTCUSDT", "BTC/USDT", "USDCUSDT")
+            
+        Returns:
+            True если это пара СТЕЙБЛ/СТЕЙБЛ
+        """
+        if not symbol:
+            return False
+        
+        # Список стабильных монет
+        stablecoins = {'USDT', 'USDC', 'BUSD', 'DAI', 'TUSD', 'USDP', 'USDD', 'FRAX', 'LUSD', 'MIM'}
+        
+        # Нормализуем символ (убираем разделители)
+        symbol_upper = symbol.upper().replace('/', '').replace('-', '')
+        
+        # Проверяем все возможные комбинации стабильных монет
+        for stable1 in stablecoins:
+            if symbol_upper.endswith(stable1):
+                # Находим базовую валюту
+                base = symbol_upper[:-len(stable1)]
+                if base in stablecoins:
+                    # Это СТЕЙБЛ/СТЕЙБЛ пара
+                    return True
+            if symbol_upper.startswith(stable1):
+                # Находим котируемую валюту
+                quote = symbol_upper[len(stable1):]
+                if quote in stablecoins:
+                    # Это СТЕЙБЛ/СТЕЙБЛ пара
+                    return True
+        
+        return False
     
     @staticmethod
     def _format_btc_status(btc_analysis: Dict[str, Any]) -> str:
@@ -196,7 +246,7 @@ class DetailedFormatter:
         entry = entry_plan.get("entry_price", opp.get("entry_price", 0))
         sl = entry_plan.get("stop_loss", opp.get("stop_loss", 0))
         tp = entry_plan.get("take_profit", opp.get("take_profit", 0))
-        score = opp.get("confluence_score", opp.get("final_score", 0))
+        score = opp.get("final_score", 0.0)
         probability = opp.get("probability", 0)
         rr = entry_plan.get("risk_reward", opp.get("risk_reward", 0))
         current_price = opp.get("current_price", entry)

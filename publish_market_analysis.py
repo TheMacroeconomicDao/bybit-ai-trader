@@ -100,15 +100,35 @@ async def publish_market_analysis(signal_tracker: Optional[Any] = None):
         print(f"📁 Checked directory: {DATA_DIR}")
         print(f"📄 Files checked: {[str(f) for f in scan_files]}")
     
-    # Separate LONG and SHORT
-    longs = sorted([opp for opp in all_opportunities if opp['side'] == 'long'], 
+    # Функция для проверки СТЕЙБЛ/СТЕЙБЛ пар
+    def is_stable_stable_pair(symbol: str) -> bool:
+        """Проверка, является ли пара СТЕЙБЛ/СТЕЙБЛ"""
+        if not symbol:
+            return False
+        stablecoins = {'USDT', 'USDC', 'BUSD', 'DAI', 'TUSD', 'USDP', 'USDD', 'FRAX', 'LUSD', 'MIM'}
+        symbol_upper = symbol.upper().replace('/', '').replace('-', '')
+        for stable1 in stablecoins:
+            if symbol_upper.endswith(stable1):
+                base = symbol_upper[:-len(stable1)]
+                if base in stablecoins:
+                    return True
+            if symbol_upper.startswith(stable1):
+                quote = symbol_upper[len(stable1):]
+                if quote in stablecoins:
+                    return True
+        return False
+    
+    # Separate LONG and SHORT, исключая СТЕЙБЛ/СТЕЙБЛ пары
+    longs = sorted([opp for opp in all_opportunities 
+                   if opp['side'] == 'long' and not is_stable_stable_pair(opp.get('symbol', ''))], 
                    key=lambda x: x['score'], reverse=True)[:5]
-    shorts = sorted([opp for opp in all_opportunities if opp['side'] == 'short'], 
+    shorts = sorted([opp for opp in all_opportunities 
+                    if opp['side'] == 'short' and not is_stable_stable_pair(opp.get('symbol', ''))], 
                     key=lambda x: x['score'], reverse=True)[:5]
     
-    # Format market analysis message (HTML safe)
-    best_long_score = max([o['score'] for o in longs], default=0)
-    best_short_score = max([o['score'] for o in shorts], default=0)
+    # ✅ Используем нормализованный score
+    best_long_score = max([o.get('final_score', 0.0) for o in longs], default=0.0)
+    best_short_score = max([o.get('final_score', 0.0) for o in shorts], default=0.0)
     
     message = f"""<b>MARKET ANALYSIS REPORT</b>
 
@@ -217,7 +237,7 @@ async def publish_market_analysis(signal_tracker: Optional[Any] = None):
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 <i>System Status: Full capacity (498 assets scanned)</i>
-<i>Next Update: Monitoring every 2-4 hours</i>"""
+<i>Next Update: Monitoring every 12 hours (2 times per day)</i>"""
 
     # Telegram bot configuration from environment
     BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")

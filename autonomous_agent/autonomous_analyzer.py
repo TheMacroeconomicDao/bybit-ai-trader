@@ -282,7 +282,7 @@ class AutonomousAnalyzer:
             logger.info("Step 4: Deep analysis of top candidates...")
             top_candidates = await self._deep_analyze_top_candidates(opportunities)
             
-            # ШАГ 5: Анализ через Qwen
+            # ШАГ 5: Анализ через Qwen (с graceful fallback)
             logger.info("Step 5: Qwen AI analysis...")
             market_data = {
                 "market_overview": market_overview,
@@ -295,6 +295,22 @@ class AutonomousAnalyzer:
                 market_data=market_data,
                 system_instructions=self.system_instructions
             )
+            
+            # НОВЫЙ GRACEFUL FALLBACK
+            if not qwen_analysis.get("success"):
+                if qwen_analysis.get("graceful_fallback"):
+                    logger.warning(
+                        f"Qwen AI analysis skipped: {qwen_analysis.get('message', 'Unknown reason')}. "
+                        "Continuing with technical analysis only."
+                    )
+                    # Продолжаем без Qwen анализа
+                    qwen_analysis = {
+                        "success": False,
+                        "graceful_fallback": True,
+                        "message": qwen_analysis.get("message", "AI analysis unavailable")
+                    }
+                else:
+                    logger.error(f"Qwen analysis failed: {qwen_analysis.get('error', 'Unknown error')}")
             
             # ШАГ 6: Фильтрация и ранжирование финальных возможностей
             logger.info("Step 6: Finalizing top 3 longs and top 3 shorts...")
@@ -488,7 +504,22 @@ class AutonomousAnalyzer:
                 logger.warning(f"Scan task failed: {result}")
                 continue
             
-            for opp in result:
+            # ✅ FIX: Обрабатываем Dict ответы от market_scanner функций
+            if isinstance(result, dict):
+                # Проверяем success
+                if not result.get("success", False):
+                    logger.warning(f"Scan task returned error: {result.get('error', 'Unknown error')}")
+                    continue
+                # Извлекаем opportunities из Dict
+                opportunities_list = result.get("opportunities", [])
+            elif isinstance(result, list):
+                # Старый формат (если где-то еще используется)
+                opportunities_list = result
+            else:
+                logger.warning(f"Unexpected result type: {type(result)}")
+                continue
+            
+            for opp in opportunities_list:
                 symbol = opp.get("symbol", "")
                 if symbol and symbol not in seen_symbols:
                     all_opportunities.append(opp)
@@ -562,6 +593,9 @@ class AutonomousAnalyzer:
                     "validation": validation,
                     "final_score": self._calculate_final_score(opp, full_analysis, validation)
                 }
+                
+                # ✅ НОРМАЛИЗАЦИЯ score полей
+                detailed_opp = normalize_opportunity_score(detailed_opp)
                 
                 detailed_analysis.append(detailed_opp)
             
@@ -837,7 +871,11 @@ class AutonomousAnalyzer:
                 
                 # Сохраняем для логирования (опыт будет записан в SignalTracker при закрытии позиции)
                 opp["experience_data"] = experience_data
-                logger.debug(f"Experience data logged for {opp.get('symbol')}: pattern={pattern_type}, score={score:.1f}")
+                logger.info(  # ИЗМЕНЕНО: info вместо debug
+                    f"Experience logged for {opp.get('symbol')}: "
+                    f"pattern={pattern_type}, score={score:.1f}, "
+                    f"rsi={rsi:.1f}, volume_ratio={volume_ratio:.2f}"
+                )
                 
             except Exception as e:
                 logger.warning(f"Experience logging failed: {e}")
@@ -1083,21 +1121,29 @@ class AutonomousAnalyzer:
         analysis = opp.get("full_analysis", {})
         composite = analysis.get("composite_signal", {}) if analysis else {}
         
-        return {
+        # ✅ Используем нормализованное значение
+        final_score = opp.get("final_score", 0.0)
+        
+        formatted = {
             "symbol": opp.get("symbol", ""),
             "current_price": opp.get("current_price", 0),
-            "side": "long",  # Можно улучшить определение
+            "side": opp.get("side", "long"),
             "entry_price": entry_plan.get("entry_price", opp.get("current_price", 0)),
             "stop_loss": entry_plan.get("stop_loss", 0),
             "take_profit": entry_plan.get("take_profit", 0),
             "risk_reward": entry_plan.get("risk_reward", 0),
-            "confluence_score": round(opp.get("final_score", 0), 1),
+            # ✅ Все три варианта с одним значением
+            "final_score": round(final_score, 2),
+            "confluence_score": round(final_score, 2),
+            "score": round(final_score, 2),
             "probability": opp.get("probability", 0),
             "reasoning": opp.get("why", ""),
             "timeframes_alignment": list(analysis.get("timeframes", {}).keys()) if analysis else [],
             "key_factors": self._extract_key_factors(opp, analysis),
             "validation": opp.get("validation", {})
         }
+        
+        return formatted
     
     def _extract_key_factors(self, opp: Dict, analysis: Dict) -> List[str]:
         """Извлечение ключевых факторов"""

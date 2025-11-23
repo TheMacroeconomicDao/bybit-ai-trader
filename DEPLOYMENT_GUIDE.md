@@ -2,7 +2,8 @@
 
 **Проект**: AI Trading Agent для Bybit  
 **Репозиторий**: https://github.com/TheMacroeconomicDao/bybit-ai-trader  
-**Последнее обновление**: 18 января 2025
+**Последнее обновление**: 18 января 2025  
+**Актуализировано**: Проверено соответствие с реальными файлами проекта
 
 ---
 
@@ -15,6 +16,8 @@ cd /Users/Gyber/GYBERNATY-ECOSYSTEM/TRADER-AGENT
 # 2. Проверка текущей ветки (работаем в MAIN)
 git checkout main
 git pull origin main
+git add .
+git commit -m 'ДОБАВЬ СЮДА ПОДРОБНЫЙ КОМЕНТАРИЙ К КОМИТУ '
 
 # 3. Сборка образа
 docker build \
@@ -63,10 +66,11 @@ kubectl get cronjob -n trader-agent
 
 Перейдите в **Settings → Secrets and variables → Actions** и добавьте:
 
-1. **QWEN_API_KEY**
-   - Значение: `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`
+1. **QWEN_API_KEY** (или **OPENROUTER_API_KEY**)
+   - Значение: Ваш OpenRouter API ключ
    - Описание: OpenRouter API ключ для доступа к Qwen моделям
-   - Формат: `sk-or-v1-...`
+   - Формат: `sk-or-v1-...` или `sk-...`
+   - Примечание: Поддерживаются оба варианта имени переменной (QWEN_API_KEY и OPENROUTER_API_KEY)
 
 2. **BYBIT_API_KEY**
    - Значение: Ваш Bybit API ключ
@@ -92,10 +96,10 @@ kubectl get cronjob -n trader-agent
 
 ```bash
 # Через GitHub CLI (если установлен)
-gh secret set QWEN_API_KEY --body "sk-6f5319fb244f4f9faa1595825cf87a05"
+gh secret set QWEN_API_KEY --body "your_openrouter_api_key"
 gh secret set BYBIT_API_KEY --body "your_bybit_api_key"
 gh secret set BYBIT_API_SECRET --body "your_bybit_api_secret"
-gh secret set TELEGRAM_BOT_TOKEN --body "8003689195:AAGxQsopKvlLS34H2TZ0S1a0K7s4yV4iOBY"
+gh secret set TELEGRAM_BOT_TOKEN --body "your_telegram_bot_token"
 gh secret set TELEGRAM_CHAT_IDS --body "-1003382613825,-1003484839912"
 ```
 
@@ -479,7 +483,10 @@ echo "🎉 Деплой завершен успешно!"
    - Создание красивых сообщений
    - HTML форматирование
 
-4. **`mcp_server/telegram_bot.py`** - Telegram Bot интеграция
+4. **`autonomous_agent/detailed_formatter.py`** - детальное форматирование
+   - Расширенное форматирование анализа
+
+5. **`mcp_server/telegram_bot.py`** - Telegram Bot интеграция
    - Отправка сообщений в каналы
    - Обработка ошибок
 
@@ -511,9 +518,11 @@ echo "🎉 Деплой завершен успешно!"
 
 ```bash
 # В ConfigMap (k8s/configmap.yaml):
-- QWEN_MODEL=qwen-max
+- QWEN_MODEL=qwen/qwen-turbo  # OpenRouter формат модели
 - BYBIT_TESTNET=false
-- ANALYSIS_SCHEDULE=*/30 * * * *  # Каждые 30 минут
+- ANALYSIS_SCHEDULE=*/30 * * * *  # Информационное поле (реальное расписание в cronjob.yaml)
+- TELEGRAM_CHAT_IDS=-1003382613825,-1003484839912
+- LOG_LEVEL=INFO
 ```
 
 ---
@@ -602,8 +611,9 @@ kubectl get cronjob -n trader-agent
 - Работаем в **main** ветке
 - Namespace: **trader-agent**
 - CronJob: **trader-agent-analyzer**
-- Расписание: **каждые 30 минут**
+- Расписание: **каждые 12 часов** (0 */12 * * *)
 - Telegram каналы: **-1003382613825, -1003484839912**
+- Модель Qwen: **qwen/qwen-turbo** (OpenRouter формат)
 
 ---
 
