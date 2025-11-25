@@ -126,7 +126,7 @@ class DetailedFormatter:
         if passed_zero_risk == 0:
             message += "\n⚠️ NO ELITE OPPORTUNITIES (≥8.0/10) - Wait for better setups!\n"
         
-        message += "\n━" * 50 + "\n"
+        message += "\n" + "━" * 50 + "\n"
         message += "Next scan: 12h | System: INSTITUTIONAL v3.0"
         
         return message
