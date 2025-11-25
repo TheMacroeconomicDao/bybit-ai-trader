@@ -169,3 +169,5 @@ class WhaleDetector:
         if abs(walls.get('imbalance', 0)) > 0.25:
             conf += 0.2
         return min(0.95, conf)
+
+

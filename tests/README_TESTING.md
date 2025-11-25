@@ -67,3 +67,5 @@ pip install ccxt loguru pandas numpy ta python-dotenv pytz
 - Не в European (08:00-10:00 UTC) или US (13:30-15:30 UTC) сессии
 - Нет breakout в Opening Range
 - Недостаточный volume
+
+

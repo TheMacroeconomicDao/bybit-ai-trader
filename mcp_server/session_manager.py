@@ -123,3 +123,5 @@ class SessionManager:
         
         session = self.get_current_session()
         return multipliers.get(session, 1.0)
+
+

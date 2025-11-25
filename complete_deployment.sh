@@ -82,3 +82,5 @@ echo ""
 echo "Для проверки статуса CronJob:"
 echo "  kubectl get cronjob -n trader-agent"
 
+
+

@@ -18,6 +18,7 @@ from mcp_server.bybit_client import BybitClient
 from mcp_server.technical_analysis import TechnicalAnalysis
 from mcp_server.market_scanner import MarketScanner
 from autonomous_agent.qwen_client import QwenClient
+from mcp_server.score_normalizer import normalize_opportunity_score, validate_score_fields
 
 # Advanced features imports
 try:
@@ -72,36 +73,6 @@ except ImportError:
     CACHE_MANAGER_AVAILABLE = False
     cached = lambda ttl: lambda f: f  # No-op decorator
     get_cache_manager = None
-
-
-def normalize_opportunity_score(opp: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Нормализация названий score полей для единообразия
-    
-    Args:
-        opp: Opportunity dictionary
-        
-    Returns:
-        Normalized opportunity with unified score field
-    """
-    # Извлекаем score из любого доступного поля
-    score_value = (
-        opp.get("final_score") or
-        opp.get("confluence_score") or
-        opp.get("score") or
-        0.0
-    )
-    
-    # Унифицируем: используем final_score как primary
-    opp["final_score"] = float(score_value)
-    
-    # Сохраняем также в других полях для совместимости
-    if "confluence_score" not in opp:
-        opp["confluence_score"] = float(score_value)
-    if "score" not in opp:
-        opp["score"] = float(score_value)
-    
-    return opp
 
 
 class AutonomousAnalyzer:
@@ -375,9 +346,16 @@ class AutonomousAnalyzer:
                 logger.info(f"Recorded {len(tracked_signals)} signals for quality tracking")
             
             # Разделяем все возможности на лонги и шорты для статистики
-            # Проверяем side в entry_plan или в корне объекта
-            all_longs = [opp for opp in top_candidates if (opp.get("entry_plan", {}).get("side") or opp.get("side", "long")).lower() == "long"]
-            all_shorts = [opp for opp in top_candidates if (opp.get("entry_plan", {}).get("side") or opp.get("side", "long")).lower() == "short"]
+            all_longs = [opp for opp in top_candidates if opp.get("entry_plan", {}).get("side", "long") == "long"]
+            all_shorts = [opp for opp in top_candidates if opp.get("entry_plan", {}).get("side", "long") == "short"]
+            
+            # ШАГ 7: Сохранить результаты для publish_market_analysis
+            logger.info("Step 7: Saving scan results...")
+            await self._save_scan_results(
+                opportunities=top_candidates,
+                longs=top_longs,
+                shorts=top_shorts
+            )
             
             return {
                 "success": True,
@@ -403,6 +381,80 @@ class AutonomousAnalyzer:
                 "error": str(e),
                 "timestamp": datetime.now().isoformat()
             }
+    
+    async def _save_scan_results(
+        self,
+        opportunities: List[Dict[str, Any]],
+        longs: List[Dict[str, Any]],
+        shorts: List[Dict[str, Any]]
+    ) -> None:
+        """
+        Сохранить результаты сканирования в JSON файлы для publish_market_analysis
+        
+        Args:
+            opportunities: Все найденные возможности
+            longs: Топ 3 лонга
+            shorts: Топ 3 шорта
+        """
+        try:
+            from pathlib import Path
+            import json
+            from datetime import datetime
+            
+            # Создаём директорию data если не существует
+            data_dir = Path(__file__).parent.parent / "data"
+            data_dir.mkdir(exist_ok=True)
+            
+            # Генерируем имя файла с timestamp
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            filename = data_dir / f"scan_results_{timestamp}.json"
+            
+            # Подготавливаем данные для сохранения
+            # Нормализуем все opportunities перед сохранением
+            normalized_opportunities = [
+                normalize_opportunity_score(opp.copy())
+                for opp in opportunities
+            ]
+            
+            normalized_longs = [
+                normalize_opportunity_score(opp.copy())
+                for opp in longs
+            ]
+            
+            normalized_shorts = [
+                normalize_opportunity_score(opp.copy())
+                for opp in shorts
+            ]
+            
+            data = {
+                "timestamp": datetime.now().isoformat(),
+                "total_opportunities": len(normalized_opportunities),
+                "longs_count": len(normalized_longs),
+                "shorts_count": len(normalized_shorts),
+                "opportunities": normalized_opportunities[:50],  # Топ 50
+                "top_longs": normalized_longs,
+                "top_shorts": normalized_shorts
+            }
+            
+            # Сохраняем в файл
+            with open(filename, 'w', encoding='utf-8') as f:
+                json.dump(data, f, indent=2, ensure_ascii=False)
+            
+            logger.info(f"✅ Scan results saved to {filename}")
+            
+            # Удаляем старые файлы (оставляем последние 10)
+            scan_files = sorted(
+                data_dir.glob("scan_results_*.json"),
+                key=lambda p: p.stat().st_mtime,
+                reverse=True
+            )
+            
+            for old_file in scan_files[10:]:
+                old_file.unlink()
+                logger.debug(f"Deleted old scan file: {old_file.name}")
+                
+        except Exception as e:
+            logger.error(f"Failed to save scan results: {e}", exc_info=True)
     
     async def _analyze_btc(self) -> Dict[str, Any]:
         """Детальный анализ BTC (с кэшированием 5 минут если доступно)"""
@@ -586,8 +638,13 @@ class AutonomousAnalyzer:
         # Берем топ N по score
         top_candidates = opportunities[:top_n]
         
-        # Фильтруем по минимальному score
-        filtered = [opp for opp in top_candidates if opp.get("score", 0) >= 7.0]
+        # ═══════════════════════════════════════════════════════
+        # REMOVED HARD FILTER! Process ALL candidates
+        # ═══════════════════════════════════════════════════════
+        # NO FILTERING by score - tier classification handles quality
+        # Process all candidates (already sorted by score)
+        filtered = top_candidates  # Keep ALL
+        logger.info(f"Processing {len(filtered)} candidates (no hard score filter)")
         
         # Детальный анализ каждого кандидата
         detailed_analysis = []
@@ -963,10 +1020,28 @@ class AutonomousAnalyzer:
         
         # Если Qwen не дал рекомендаций, используем наши кандидаты
         # КРИТИЧЕСКИ ВАЖНО: НЕ фильтруем по score - показываем ВСЕ с предупреждениями
-        # Разделяем на лонги и шорты
-        # Проверяем side в entry_plan или в корне объекта
-        all_longs = [opp for opp in candidates if (opp.get("entry_plan", {}).get("side") or opp.get("side", "long")).lower() == "long"]
-        all_shorts = [opp for opp in candidates if (opp.get("entry_plan", {}).get("side") or opp.get("side", "long")).lower() == "short"]
+        
+        # ═══════════════════════════════════════════════════════
+        # Используем side из entry_plan для более точного определения
+        # ═══════════════════════════════════════════════════════
+        all_longs = []
+        all_shorts = []
+        
+        for opp in candidates:
+            # Определяем side из entry_plan (более надежно)
+            entry_plan = opp.get("entry_plan", {})
+            side = entry_plan.get("side", "long").lower()
+            
+            # Также проверяем альтернативные поля
+            if side not in ["long", "short"]:
+                side = opp.get("side", "long").lower()
+            
+            if side == "long":
+                all_longs.append(opp)
+            else:
+                all_shorts.append(opp)
+        
+        logger.info(f"Direction split: {len(all_longs)} LONGS, {len(all_shorts)} SHORTS")
         
         # Сортируем по final_score
         all_longs.sort(key=lambda x: x.get("final_score", 0), reverse=True)

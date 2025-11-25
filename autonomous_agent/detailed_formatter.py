@@ -6,6 +6,12 @@
 from typing import Dict, List, Any
 from datetime import datetime
 from loguru import logger
+import sys
+from pathlib import Path
+
+# Добавляем импорт нормализатора
+sys.path.insert(0, str(Path(__file__).parent.parent))
+from mcp_server.score_normalizer import normalize_opportunity_score
 
 
 class DetailedFormatter:
@@ -16,6 +22,12 @@ class DetailedFormatter:
         """
         Форматирование полного детального отчёта
         
+        ENHANCED VERSION 3.0: Institutional Quality
+        - Market Regime detection
+        - Adaptive Thresholds
+        - Tier-based classification
+        - Enhanced filtering and warnings
+        
         Args:
             analysis_result: Результат анализа от AutonomousAnalyzer
             
@@ -25,13 +37,42 @@ class DetailedFormatter:
         if not analysis_result.get("success"):
             return "❌ Ошибка анализа рынка. Попробуйте позже."
         
-        message = "MARKET ANALYSIS REPORT\n\n"
-        message += "━" * 40 + "\n\n"
+        message = "🔍 INSTITUTIONAL MARKET ANALYSIS REPORT\n\n"
+        message += "━" * 50 + "\n\n"
+        
+        # ═══════════════════════════════════════════════════════
+        # MARKET REGIME (NEW!)
+        # ═══════════════════════════════════════════════════════
+        market_regime = analysis_result.get("market_regime", {})
+        if market_regime:
+            message += "📊 MARKET REGIME\n\n"
+            message += f"• Type: {market_regime.get('type', 'unknown').upper()}\n"
+            message += f"• Confidence: {market_regime.get('confidence', 0):.0%}\n"
+            message += f"• Description: {market_regime.get('description', '')}\n"
+            
+            metrics = market_regime.get('metrics', {})
+            message += f"• BTC Weekly: {metrics.get('btc_weekly_change_pct', 0):+.2f}%\n"
+            message += f"• ADX: {metrics.get('adx', 0):.1f}\n"
+            message += f"• Volatility: {metrics.get('volatility', 'normal')}\n\n"
+            
+            message += f"**Trading Implications:** {market_regime.get('trading_implications', '')}\n\n"
+            message += "━" * 50 + "\n\n"
+        
+        # ═══════════════════════════════════════════════════════
+        # ADAPTIVE THRESHOLDS (NEW!)
+        # ═══════════════════════════════════════════════════════
+        thresholds = analysis_result.get("adaptive_thresholds", {})
+        if thresholds:
+            message += "🎯 ADAPTIVE THRESHOLDS\n\n"
+            message += f"• LONG opportunities: {thresholds.get('long', 7.0):.1f}/10\n"
+            message += f"• SHORT opportunities: {thresholds.get('short', 7.0):.1f}/10\n"
+            message += f"• Reasoning: {thresholds.get('reasoning', '')}\n\n"
+            message += "━" * 50 + "\n\n"
         
         # BTC STATUS (CRITICAL)
         btc_analysis = analysis_result.get("btc_analysis", {})
         message += DetailedFormatter._format_btc_status(btc_analysis)
-        message += "\n" + "━" * 40 + "\n\n"
+        message += "\n" + "━" * 50 + "\n\n"
         
         # TOP OPPORTUNITIES
         top_longs = analysis_result.get("top_3_longs", [])
@@ -71,9 +112,22 @@ class DetailedFormatter:
         longs_found = analysis_result.get("longs_found", 0)
         shorts_found = analysis_result.get("shorts_found", 0)
         
-        # ✅ Используем final_score напрямую (уже нормализовано)
-        best_long_score = max([opp.get("final_score", 0.0) for opp in all_longs], default=0.0)
-        best_short_score = max([opp.get("final_score", 0.0) for opp in all_shorts], default=0.0)
+        # ✅ Безопасное извлечение и нормализация scores с проверкой на None
+        # Нормализуем все opportunities перед использованием
+        all_longs = [normalize_opportunity_score(opp) for opp in all_longs if opp]
+        all_shorts = [normalize_opportunity_score(opp) for opp in all_shorts if opp]
+        
+        # Безопасное извлечение с дефолтным значением и валидацией
+        best_long_score = 0.0
+        best_short_score = 0.0
+        
+        if all_longs:
+            long_scores = [opp.get("final_score", 0.0) for opp in all_longs if opp.get("final_score") is not None]
+            best_long_score = max(long_scores) if long_scores else 0.0
+        
+        if all_shorts:
+            short_scores = [opp.get("final_score", 0.0) for opp in all_shorts if opp.get("final_score") is not None]
+            best_short_score = max(short_scores) if short_scores else 0.0
         
         message += "DIRECTION COMPARISON:\n\n"
         message += f"• LONG found: {longs_found} opportunities\n"
@@ -240,26 +294,66 @@ class DetailedFormatter:
     
     @staticmethod
     def _format_opportunity_detailed(opp: Dict[str, Any], index: int) -> str:
-        """Детальное форматирование одной возможности"""
+        """Детальное форматирование одной возможности (legacy)"""
+        # Используем новый enhanced метод
+        return DetailedFormatter._format_opportunity_enhanced(opp, index)
+    
+    @staticmethod
+    def _format_opportunity_enhanced(opp: Dict[str, Any], index: int) -> str:
+        """
+        Enhanced opportunity formatting with tier and warnings
+        
+        NEW: Shows tier, warnings, regime context
+        """
         symbol = opp.get("symbol", "UNKNOWN")
+        tier = opp.get("tier", "unknown")
+        tier_color = opp.get("tier_color", "⚪")
+        tier_name = opp.get("tier_name", "Unknown")
+        
+        score = opp.get("score", 0.0)
+        probability = opp.get("probability", 0.0)
+        
         entry_plan = opp.get("entry_plan", {})
         entry = entry_plan.get("entry_price", opp.get("entry_price", 0))
         sl = entry_plan.get("stop_loss", opp.get("stop_loss", 0))
         tp = entry_plan.get("take_profit", opp.get("take_profit", 0))
-        score = opp.get("final_score", 0.0)
-        probability = opp.get("probability", 0)
         rr = entry_plan.get("risk_reward", opp.get("risk_reward", 0))
+        
         current_price = opp.get("current_price", entry)
         change_24h = opp.get("change_24h", 0)
         
-        message = f"{index}. {symbol}\n\n"
-        message += f"• Score: {score:.2f} | Probability: {int(probability*100)}%\n"
+        message = f"### {index}. {symbol} - {tier_color} {tier_name} Tier\n\n"
+        message += f"**Score:** {score:.1f}/10 | **Probability:** {probability:.0%} | **R:R:** 1:{rr:.1f}\n\n"
+        
+        # Entry details
+        message += "**Entry Plan:**\n"
         message += f"• Current Price: ${current_price:.4f} ({change_24h:+.2f}% 24h)\n"
         message += f"• Entry: ${entry:.4f}\n"
         message += f"• Stop-Loss: ${sl:.4f}\n"
         message += f"• Take-Profit: ${tp:.4f}\n"
-        message += f"• Risk/Reward: {rr:.2f}\n"
+        message += f"• Position Size: {opp.get('position_size_multiplier', 1.0):.0%} of standard\n\n"
         
+        # Tier recommendation
+        message += f"**Tier:** {tier_name} {tier_color}\n"
+        message += f"**Recommendation:** {opp.get('display_recommendation', 'N/A')}\n"
+        
+        # Warnings
+        warning = opp.get("warning")
+        if warning:
+            message += f"\n**Warning:** {warning}\n"
+        
+        regime_warning = opp.get("regime_warning")
+        if regime_warning:
+            message += f"**Regime Warning:** {regime_warning}\n"
+        
+        # Key factors (if available)
+        key_factors = opp.get("key_factors", [])
+        if key_factors:
+            message += "\n**Key Factors:**\n"
+            for factor in key_factors[:5]:
+                message += f"• {factor}\n"
+        
+        message += "\n---\n\n"
         return message
     
     @staticmethod

@@ -172,3 +172,5 @@ class OpeningRangeBreakout:
             # US ORB: 13:30-15:30 UTC
             return (hour == 13 and minute >= 30) or (14 <= hour < 15) or (hour == 15 and minute < 30)
         return False
+
+

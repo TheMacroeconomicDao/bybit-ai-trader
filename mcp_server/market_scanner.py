@@ -17,6 +17,26 @@ except ImportError:
     from volume_profile import VolumeProfileAnalyzer
     from session_manager import SessionManager
 
+# NEW: Institutional modules imports
+try:
+    from .tier_classifier import TierClassifier
+    from .regime_detector import RegimeDetector
+    from .adaptive_thresholds import AdaptiveThresholds
+    from .smart_display import SmartDisplay
+except ImportError:
+    from tier_classifier import TierClassifier
+    from regime_detector import RegimeDetector
+    from adaptive_thresholds import AdaptiveThresholds
+    from smart_display import SmartDisplay
+
+# OPTIONAL: ML predictor
+try:
+    from .ml_probability_predictor import MLProbabilityPredictor
+    ML_AVAILABLE = True
+except ImportError:
+    ML_AVAILABLE = False
+    MLProbabilityPredictor = None
+
 
 class MarketScanner:
     """Сканер рынка для поиска торговых возможностей"""
@@ -30,7 +50,18 @@ class MarketScanner:
         self.volume_profile = VolumeProfileAnalyzer(bybit_client)
         self.session_manager = SessionManager()
         
-        logger.info("Market Scanner initialized with advanced modules")
+        # NEW: Institutional modules
+        self.tier_classifier = TierClassifier()
+        self.regime_detector = RegimeDetector()
+        
+        # NEW: ML predictor (optional)
+        self.ml_predictor = None
+        if ML_AVAILABLE:
+            self.ml_predictor = MLProbabilityPredictor()
+            if self.ml_predictor.model_available():
+                logger.info("✅ ML probability predictor enabled")
+        
+        logger.info("Market Scanner initialized (institutional mode)")
     
     async def scan_market(
         self,
@@ -88,6 +119,39 @@ class MarketScanner:
                 logger.warning("   Analysis will work, but position sizes won't be calculated.")
                 account_balance = None
                 # НЕ прерываем выполнение - продолжаем анализ
+            
+            # Сохраняем BTC анализ для publish_market_analysis
+            try:
+                from pathlib import Path
+                from datetime import datetime
+                import json
+                
+                btc_file = Path(__file__).parent.parent / "data" / "btc_analysis.json"
+                btc_file.parent.mkdir(exist_ok=True)
+                
+                # Извлекаем необходимые данные из btc_analysis
+                h4_indicators = btc_analysis.get('timeframes', {}).get('4h', {}).get('indicators', {})
+                
+                btc_data = {
+                    "timestamp": datetime.now().isoformat(),
+                    "status": "bearish" if btc_trend == "downtrend" else "bullish" if btc_trend == "uptrend" else "neutral",
+                    "trend": btc_analysis.get('composite_signal', {}).get('signal', 'HOLD'),
+                    "rsi_values": [
+                        btc_analysis.get('timeframes', {}).get('1h', {}).get('indicators', {}).get('rsi', {}).get('rsi_14', 50),
+                        h4_indicators.get('rsi', {}).get('rsi_14', 50),
+                        btc_analysis.get('timeframes', {}).get('1d', {}).get('indicators', {}).get('rsi', {}).get('rsi_14', 50)
+                    ],
+                    "adx": h4_indicators.get('adx', {}).get('adx', 20),
+                    "price": btc_analysis.get('timeframes', {}).get('4h', {}).get('current_price', 0),
+                    "change_24h": 0  # TODO: добавить если доступно
+                }
+                
+                with open(btc_file, 'w', encoding='utf-8') as f:
+                    json.dump(btc_data, f, indent=2)
+                
+                logger.debug("BTC analysis saved")
+            except Exception as e:
+                logger.warning(f"Failed to save BTC analysis: {e}")
                 
             # 3. Get Open Positions for correlation check
             open_positions_symbols = []
@@ -247,13 +311,85 @@ class MarketScanner:
             # Сортировка по score
             opportunities.sort(key=lambda x: x['score'], reverse=True)
             
-            # Ранний выход: если уже нашли достаточно качественных (score >= 7.0)
-            high_quality = [opp for opp in opportunities if opp['score'] >= 7.0]
-            if len(high_quality) >= limit:
-                logger.info(f"Found {len(high_quality)} high-quality opportunities, returning top {limit}")
-                final_opportunities = high_quality[:limit]
-            else:
-                final_opportunities = opportunities[:limit]
+            # ═══════════════════════════════════════════════════════
+            # NEW: Institutional pipeline - NO HARD FILTERING!
+            # ═══════════════════════════════════════════════════════
+            
+            # Get regime and adaptive thresholds
+            btc_full = await self.ta.analyze_asset("BTC/USDT", timeframes=["1h", "4h", "1d"])
+            market_regime = self.regime_detector.detect(btc_full)
+            adaptive_thresholds = AdaptiveThresholds.calculate(market_regime)
+            
+            logger.info(
+                f"Regime: {market_regime['type']}, "
+                f"Thresholds: LONG={adaptive_thresholds['long']:.1f}, SHORT={adaptive_thresholds['short']:.1f}"
+            )
+            
+            # Normalize ALL scores immediately (20-point → 10-point)
+            for opp in opportunities:
+                raw_score = opp.get("score", 0)
+                normalized = (raw_score / 20.0) * 10.0
+                opp["score"] = round(normalized, 2)
+                opp["confluence_score"] = round(normalized, 2)
+                opp["final_score"] = round(normalized, 2)
+                opp["raw_score_20"] = raw_score
+            
+            # Classify tiers for ALL opportunities
+            for opp in opportunities:
+                entry_plan = opp.get("entry_plan", {})
+                tier = self.tier_classifier.classify(
+                    score=opp["score"],
+                    probability=opp.get("probability", 0.5),
+                    risk_reward=entry_plan.get("risk_reward", 2.0)
+                )
+                opp["tier"] = tier
+                opp["tier_color"] = self.tier_classifier.get_tier_color(tier)
+                opp["tier_name"] = self.tier_classifier.get_tier_name(tier)
+                opp["tier_recommendation"] = self.tier_classifier.get_recommendation(tier)
+                opp["position_size_multiplier"] = self.tier_classifier.get_position_size_multiplier(tier)
+            
+            # Separate LONG and SHORT directions
+            all_longs = [o for o in opportunities if o.get("entry_plan", {}).get("side") == "long"]
+            all_shorts = [o for o in opportunities if o.get("entry_plan", {}).get("side") == "short"]
+            
+            all_longs.sort(key=lambda x: x["score"], reverse=True)
+            all_shorts.sort(key=lambda x: x["score"], reverse=True)
+            
+            logger.info(f"Direction split: {len(all_longs)} LONGS, {len(all_shorts)} SHORTS")
+            
+            # Smart display selection (TOP-3 each direction with warnings)
+            top_longs = SmartDisplay.select_top_3_with_warnings(
+                all_longs[:limit],
+                adaptive_thresholds["long"],
+                market_regime
+            )
+            
+            top_shorts = SmartDisplay.select_top_3_with_warnings(
+                all_shorts[:limit],
+                adaptive_thresholds["short"],
+                market_regime
+            )
+            
+            logger.info(f"Display: TOP-{len(top_longs)} LONGS, TOP-{len(top_shorts)} SHORTS")
+            
+            # ML enhancement if available
+            if self.ml_predictor and self.ml_predictor.model_available():
+                for opp in top_longs + top_shorts:
+                    ml_prob = self.ml_predictor.predict_probability(
+                        confluence_score=opp["score"],
+                        volume_ratio=opp.get("volume_ratio", 1.0),
+                        btc_aligned=opp.get("btc_aligned", False),
+                        rsi_14=opp.get("rsi_14", 50),
+                        risk_reward=opp.get("risk_reward", 2.0),
+                        pattern_type=opp.get("pattern_type", "unknown"),
+                        session=self.session_manager.get_current_session() if self.session_manager else "neutral"
+                    )
+                    opp["ml_probability"] = ml_prob
+                    opp["static_probability"] = opp["probability"]
+                    opp["probability"] = round((opp["probability"] + ml_prob) / 2, 2)
+            
+            # Combine for backward compatibility (but split is primary)
+            final_opportunities = top_longs + top_shorts
             
             # Автоматическая запись топ-N сигналов в tracker
             if auto_track and signal_tracker and final_opportunities:
@@ -328,13 +464,29 @@ class MarketScanner:
                 except Exception as e:
                     logger.warning(f"Failed to auto-track signals from scan_market: {e}")
             
-            # ✅ SUCCESS RESPONSE
+            # ✅ INSTITUTIONAL SUCCESS RESPONSE
+            tier_distribution = {
+                "elite": sum(1 for o in opportunities if o.get("tier") == "elite"),
+                "professional": sum(1 for o in opportunities if o.get("tier") == "professional"),
+                "speculative": sum(1 for o in opportunities if o.get("tier") == "speculative"),
+                "high_risk": sum(1 for o in opportunities if o.get("tier") == "high_risk")
+            }
+            
             return {
                 "success": True,
-                "opportunities": final_opportunities,
+                "opportunities": final_opportunities,  # Backward compatibility
+                "market_regime": market_regime,
+                "adaptive_thresholds": adaptive_thresholds,
+                "top_3_longs": top_longs,
+                "top_3_shorts": top_shorts,
+                "all_longs_count": len(all_longs),
+                "all_shorts_count": len(all_shorts),
+                "tier_distribution": tier_distribution,
+                "total_scanned": len(candidates),
+                "total_analyzed": len(opportunities),
                 "error": None,
-                "scanned_count": len(candidates),
-                "found_count": len(final_opportunities)
+                "scanned_count": len(candidates),  # Backward compatibility
+                "found_count": len(final_opportunities)  # Backward compatibility
             }
             
         except Exception as e:

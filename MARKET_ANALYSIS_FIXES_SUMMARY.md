@@ -185,3 +185,5 @@ assert isinstance(result["confluence_with_poc"], bool)
 ---
 
 *Все исправления применены и проверены. Система готова к использованию.* ✅
+
+

@@ -141,3 +141,5 @@ class MLPredictor:
             "reversal": {"win_rate": 0.68, "avg_rr": 2.0},
             "unknown": {"win_rate": 0.70, "avg_rr": 2.0}
         }
+
+
