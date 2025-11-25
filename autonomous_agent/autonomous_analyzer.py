@@ -74,6 +74,36 @@ except ImportError:
     get_cache_manager = None
 
 
+def normalize_opportunity_score(opp: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Нормализация названий score полей для единообразия
+    
+    Args:
+        opp: Opportunity dictionary
+        
+    Returns:
+        Normalized opportunity with unified score field
+    """
+    # Извлекаем score из любого доступного поля
+    score_value = (
+        opp.get("final_score") or
+        opp.get("confluence_score") or
+        opp.get("score") or
+        0.0
+    )
+    
+    # Унифицируем: используем final_score как primary
+    opp["final_score"] = float(score_value)
+    
+    # Сохраняем также в других полях для совместимости
+    if "confluence_score" not in opp:
+        opp["confluence_score"] = float(score_value)
+    if "score" not in opp:
+        opp["score"] = float(score_value)
+    
+    return opp
+
+
 class AutonomousAnalyzer:
     """Автономный анализатор рынка с Qwen AI"""
     
@@ -345,8 +375,9 @@ class AutonomousAnalyzer:
                 logger.info(f"Recorded {len(tracked_signals)} signals for quality tracking")
             
             # Разделяем все возможности на лонги и шорты для статистики
-            all_longs = [opp for opp in top_candidates if opp.get("entry_plan", {}).get("side", "long") == "long"]
-            all_shorts = [opp for opp in top_candidates if opp.get("entry_plan", {}).get("side", "long") == "short"]
+            # Проверяем side в entry_plan или в корне объекта
+            all_longs = [opp for opp in top_candidates if (opp.get("entry_plan", {}).get("side") or opp.get("side", "long")).lower() == "long"]
+            all_shorts = [opp for opp in top_candidates if (opp.get("entry_plan", {}).get("side") or opp.get("side", "long")).lower() == "short"]
             
             return {
                 "success": True,
@@ -933,8 +964,9 @@ class AutonomousAnalyzer:
         # Если Qwen не дал рекомендаций, используем наши кандидаты
         # КРИТИЧЕСКИ ВАЖНО: НЕ фильтруем по score - показываем ВСЕ с предупреждениями
         # Разделяем на лонги и шорты
-        all_longs = [opp for opp in candidates if opp.get("side", "long").lower() == "long"]
-        all_shorts = [opp for opp in candidates if opp.get("side", "long").lower() == "short"]
+        # Проверяем side в entry_plan или в корне объекта
+        all_longs = [opp for opp in candidates if (opp.get("entry_plan", {}).get("side") or opp.get("side", "long")).lower() == "long"]
+        all_shorts = [opp for opp in candidates if (opp.get("entry_plan", {}).get("side") or opp.get("side", "long")).lower() == "short"]
         
         # Сортируем по final_score
         all_longs.sort(key=lambda x: x.get("final_score", 0), reverse=True)
