@@ -271,9 +271,20 @@ class AutonomousAnalyzer:
             logger.info("Step 2: Analyzing BTC...")
             btc_analysis = await self._analyze_btc()
             
-            # ШАГ 3: Параллельное сканирование рынка
+            # ШАГ 3: Параллельное сканирование рынка (с извлечением institutional данных)
             logger.info("Step 3: Scanning market for opportunities...")
-            opportunities = await self._scan_all_opportunities()
+            scan_result = await self._scan_all_opportunities()
+            
+            # ✅ ИЗВЛЕКАЕМ institutional поля из scan результата
+            opportunities = scan_result.get("opportunities", [])
+            market_regime = scan_result.get("market_regime", {})
+            adaptive_thresholds = scan_result.get("adaptive_thresholds", {})
+            
+            logger.info(
+                f"Institutional data extracted: "
+                f"regime={market_regime.get('type', 'unknown')}, "
+                f"thresholds=LONG:{adaptive_thresholds.get('long', 7.0):.1f}/SHORT:{adaptive_thresholds.get('short', 7.0):.1f}"
+            )
             
             # Получаем общее количество активов для статистики
             all_tickers = await self.bybit_client.get_all_tickers("spot")
@@ -362,6 +373,9 @@ class AutonomousAnalyzer:
                 "timestamp": datetime.now().isoformat(),
                 "market_overview": market_overview,
                 "btc_analysis": btc_analysis,
+                # ✅ INSTITUTIONAL V3.0 FIELDS
+                "market_regime": market_regime,
+                "adaptive_thresholds": adaptive_thresholds,
                 "top_3_longs": top_longs,
                 "top_3_shorts": top_shorts,
                 "all_longs": all_longs[:10],  # Топ 10 для статистики
@@ -512,8 +526,16 @@ class AutonomousAnalyzer:
         else:
             return "neutral"
     
-    async def _scan_all_opportunities(self) -> List[Dict[str, Any]]:
-        """Параллельное сканирование всех возможностей (с кэшированием 3 минуты если доступно)"""
+    async def _scan_all_opportunities(self) -> Dict[str, Any]:
+        """
+        Параллельное сканирование всех возможностей (с кэшированием 3 минуты если доступно)
+        
+        Returns:
+            Dict с institutional полями:
+            - opportunities: List[Dict]
+            - market_regime: Dict
+            - adaptive_thresholds: Dict
+        """
         # Используем кэш если доступен
         if self.cache_manager:
             cache_key = f"_scan_all_opportunities"
@@ -523,6 +545,8 @@ class AutonomousAnalyzer:
                 return cached_result
         
         all_opportunities = []
+        market_regime = {}
+        adaptive_thresholds = {}
         
         # Параллельный запуск всех типов сканирования с увеличенными лимитами
         # Включаем advanced features если доступны (для топ активов с большим объемом)
@@ -582,7 +606,7 @@ class AutonomousAnalyzer:
         
         # Объединяем результаты
         seen_symbols = set()
-        for result in results:
+        for idx, result in enumerate(results):
             if isinstance(result, Exception):
                 logger.warning(f"Scan task failed: {result}")
                 continue
@@ -593,6 +617,12 @@ class AutonomousAnalyzer:
                 if not result.get("success", False):
                     logger.warning(f"Scan task returned error: {result.get('error', 'Unknown error')}")
                     continue
+                
+                # ✅ ИЗВЛЕКАЕМ institutional поля из ПЕРВОГО успешного результата
+                if idx == 0 or not market_regime:
+                    market_regime = result.get("market_regime", {})
+                    adaptive_thresholds = result.get("adaptive_thresholds", {})
+                
                 # Извлекаем opportunities из Dict
                 opportunities_list = result.get("opportunities", [])
             elif isinstance(result, list):
@@ -604,20 +634,32 @@ class AutonomousAnalyzer:
             
             for opp in opportunities_list:
                 symbol = opp.get("symbol", "")
-                if symbol and symbol not in seen_symbols:
+                
+                # ✅ ФИЛЬТР: Исключаем стейбл-стейбл пары
+                if symbol and not self._is_stable_stable_pair(symbol) and symbol not in seen_symbols:
                     all_opportunities.append(opp)
                     seen_symbols.add(symbol)
         
         # Сортируем по score
         all_opportunities.sort(key=lambda x: x.get("score", 0), reverse=True)
         
-        logger.info(f"Found {len(all_opportunities)} total opportunities")
+        logger.info(
+            f"Found {len(all_opportunities)} total opportunities "
+            f"(regime: {market_regime.get('type', 'unknown')})"
+        )
+        
+        # Формируем результат
+        result = {
+            "opportunities": all_opportunities,
+            "market_regime": market_regime,
+            "adaptive_thresholds": adaptive_thresholds
+        }
         
         # Сохраняем в кэш если доступен
         if self.cache_manager:
-            self.cache_manager.set("_scan_all_opportunities", all_opportunities, ttl=180)
+            self.cache_manager.set("_scan_all_opportunities", result, ttl=180)
         
-        return all_opportunities
+        return result
     
     async def _deep_analyze_top_candidates(
         self,
@@ -972,6 +1014,43 @@ class AutonomousAnalyzer:
         score = round(score * 2) / 2
         
         return min(12.0, max(0.0, score))
+    
+    @staticmethod
+    def _is_stable_stable_pair(symbol: str) -> bool:
+        """
+        Проверка, является ли пара СТЕЙБЛ/СТЕЙБЛ
+        
+        Исключаем:
+        - USDC/USDT, BUSD/USDT (стейбл/стейбл)
+        - USDT/TRY, USDT/BRL (стейбл/фиат)
+        - RLUSD/USDT и подобные
+        
+        НЕ исключаем:
+        - BTC/USDT, ETH/USDT (крипта/стейбл)
+        """
+        if not symbol:
+            return False
+        
+        # Список стабильных монет и фиатов
+        stablecoins = {'USDT', 'USDC', 'BUSD', 'DAI', 'TUSD', 'USDP', 'USDD', 'FRAX', 'LUSD', 'MIM', 'RLUSD'}
+        fiats = {'TRY', 'BRL', 'EUR', 'GBP', 'AUD', 'RUB'}
+        stable_and_fiat = stablecoins | fiats
+        
+        # Нормализуем символ
+        symbol_upper = symbol.upper().replace('/', '').replace('-', '')
+        
+        # Проверяем все комбинации
+        for stable1 in stable_and_fiat:
+            if symbol_upper.endswith(stable1):
+                base = symbol_upper[:-len(stable1)]
+                if base in stable_and_fiat:
+                    return True
+            if symbol_upper.startswith(stable1):
+                quote = symbol_upper[len(stable1):]
+                if quote in stable_and_fiat:
+                    return True
+        
+        return False
     
     async def _finalize_top_3_longs_and_shorts(
         self,

@@ -37,42 +37,30 @@ class DetailedFormatter:
         if not analysis_result.get("success"):
             return "❌ Ошибка анализа рынка. Попробуйте позже."
         
-        message = "🔍 INSTITUTIONAL MARKET ANALYSIS REPORT\n\n"
+        message = "🔍 INSTITUTIONAL MARKET ANALYSIS\n\n"
         message += "━" * 50 + "\n\n"
         
         # ═══════════════════════════════════════════════════════
-        # MARKET REGIME (NEW!)
+        # MARKET REGIME - COMPACT
         # ═══════════════════════════════════════════════════════
         market_regime = analysis_result.get("market_regime", {})
-        if market_regime:
-            message += "📊 MARKET REGIME\n\n"
-            message += f"• Type: {market_regime.get('type', 'unknown').upper()}\n"
-            message += f"• Confidence: {market_regime.get('confidence', 0):.0%}\n"
-            message += f"• Description: {market_regime.get('description', '')}\n"
-            
-            metrics = market_regime.get('metrics', {})
-            message += f"• BTC Weekly: {metrics.get('btc_weekly_change_pct', 0):+.2f}%\n"
-            message += f"• ADX: {metrics.get('adx', 0):.1f}\n"
-            message += f"• Volatility: {metrics.get('volatility', 'normal')}\n\n"
-            
-            message += f"**Trading Implications:** {market_regime.get('trading_implications', '')}\n\n"
-            message += "━" * 50 + "\n\n"
-        
-        # ═══════════════════════════════════════════════════════
-        # ADAPTIVE THRESHOLDS (NEW!)
-        # ═══════════════════════════════════════════════════════
         thresholds = analysis_result.get("adaptive_thresholds", {})
-        if thresholds:
-            message += "🎯 ADAPTIVE THRESHOLDS\n\n"
-            message += f"• LONG opportunities: {thresholds.get('long', 7.0):.1f}/10\n"
-            message += f"• SHORT opportunities: {thresholds.get('short', 7.0):.1f}/10\n"
-            message += f"• Reasoning: {thresholds.get('reasoning', '')}\n\n"
-            message += "━" * 50 + "\n\n"
         
-        # BTC STATUS (CRITICAL)
+        if market_regime:
+            regime_type = market_regime.get('type', 'unknown').upper()
+            confidence = market_regime.get('confidence', 0)
+            message += f"📊 MARKET REGIME: {regime_type} ({confidence:.0%})\n"
+            
+            if thresholds:
+                message += f"🎯 THRESHOLDS: LONG {thresholds.get('long', 7.0):.1f}/10 | SHORT {thresholds.get('short', 7.0):.1f}/10\n"
+            
+            message += "\n" + "━" * 50 + "\n\n"
+        
+        # BTC STATUS - COMPACT
         btc_analysis = analysis_result.get("btc_analysis", {})
-        message += DetailedFormatter._format_btc_status(btc_analysis)
-        message += "\n" + "━" * 50 + "\n\n"
+        btc_status = btc_analysis.get("status", "neutral")
+        message += f"BTC: {btc_status.upper()}\n\n"
+        message += "━" * 50 + "\n\n"
         
         # TOP OPPORTUNITIES
         top_longs = analysis_result.get("top_3_longs", [])
@@ -84,29 +72,27 @@ class DetailedFormatter:
         all_longs = [opp for opp in all_longs if not DetailedFormatter._is_stable_stable_pair(opp.get("symbol", ""))]
         all_shorts = [opp for opp in all_shorts if not DetailedFormatter._is_stable_stable_pair(opp.get("symbol", ""))]
         
-        message += "TOP OPPORTUNITIES (After Full Market Scan)\n\n"
+        message += "TOP OPPORTUNITIES\n\n"
         
-        # LONG OPPORTUNITIES
-        message += "LONG OPPORTUNITIES:\n\n"
+        # LONG OPPORTUNITIES - COMPACT (TOP-3 ONLY)
+        message += f"📈 LONG (Top 3 of {len(all_longs)}):\n\n"
         if all_longs:
-            for idx, opp in enumerate(all_longs[:5], 1):  # Топ 5
-                message += DetailedFormatter._format_opportunity_detailed(opp, idx)
-                message += "\n"
+            for idx, opp in enumerate(all_longs[:3], 1):  # ✅ Только TOP-3
+                message += DetailedFormatter._format_opportunity_compact(opp, idx)
         else:
             message += "No opportunities found.\n\n"
         
-        message += "━" * 40 + "\n\n"
+        message += "━" * 50 + "\n\n"
         
-        # SHORT OPPORTUNITIES
-        message += "SHORT OPPORTUNITIES:\n\n"
+        # SHORT OPPORTUNITIES - COMPACT (TOP-3 ONLY)
+        message += f"📉 SHORT (Top 3 of {len(all_shorts)}):\n\n"
         if all_shorts:
-            for idx, opp in enumerate(all_shorts[:5], 1):  # Топ 5
-                message += DetailedFormatter._format_opportunity_detailed(opp, idx)
-                message += "\n"
+            for idx, opp in enumerate(all_shorts[:3], 1):  # ✅ Только TOP-3
+                message += DetailedFormatter._format_opportunity_compact(opp, idx)
         else:
             message += "No opportunities found.\n\n"
         
-        message += "━" * 40 + "\n\n"
+        message += "━" * 50 + "\n\n"
         
         # DIRECTION COMPARISON
         longs_found = analysis_result.get("longs_found", 0)
@@ -129,45 +115,19 @@ class DetailedFormatter:
             short_scores = [opp.get("final_score", 0.0) for opp in all_shorts if opp.get("final_score") is not None]
             best_short_score = max(short_scores) if short_scores else 0.0
         
-        message += "DIRECTION COMPARISON:\n\n"
-        message += f"• LONG found: {longs_found} opportunities\n"
-        message += f"• SHORT found: {shorts_found} opportunities\n"
-        message += f"• Best LONG score: {best_long_score:.2f}\n"
-        message += f"• Best SHORT score: {best_short_score:.2f}\n\n"
-        message += "━" * 40 + "\n\n"
-        
-        # RISK ASSESSMENT
-        message += DetailedFormatter._format_risk_assessment(
-            best_long_score, best_short_score, btc_analysis
-        )
-        message += "\n" + "━" * 40 + "\n\n"
-        
-        # SCAN STATISTICS
+        # COMPACT SUMMARY
         total_scanned = analysis_result.get("total_scanned", 0)
-        total_analyzed = analysis_result.get("total_analyzed", 0)
-        potential_candidates = analysis_result.get("potential_candidates", 0)
-        
-        passed_zero_risk = len([opp for opp in all_longs + all_shorts 
-                                if opp.get("confluence_score", 0) >= 8.0 
+        passed_zero_risk = len([opp for opp in all_longs + all_shorts
+                                if opp.get("confluence_score", 0) >= 8.0
                                 and opp.get("probability", 0) >= 0.70])
         
-        message += "SCAN STATISTICS\n\n"
-        message += f"• Total Analyzed: {total_scanned} assets\n"
-        message += f"• Potential Candidates: {potential_candidates}\n"
-        message += f"• LONG Opportunities: {longs_found}\n"
-        message += f"• SHORT Opportunities: {shorts_found}\n"
-        message += f"• Passed Zero-Risk Evaluation: {passed_zero_risk}\n\n"
-        message += "━" * 40 + "\n\n"
+        message += f"📊 STATS: {total_scanned} scanned | {longs_found} LONG | {shorts_found} SHORT | {passed_zero_risk} elite (≥8.0)\n"
         
-        # RECOMMENDATION
-        message += DetailedFormatter._format_recommendation(
-            passed_zero_risk, best_long_score, best_short_score
-        )
-        message += "\n" + "━" * 40 + "\n\n"
+        if passed_zero_risk == 0:
+            message += "\n⚠️ NO ELITE OPPORTUNITIES (≥8.0/10) - Wait for better setups!\n"
         
-        # System Status
-        message += f"System Status: Full capacity ({total_scanned} assets scanned)\n"
-        message += "Next Update: Monitoring every 12 hours (2 times per day)\n"
+        message += "\n━" * 50 + "\n"
+        message += "Next scan: 12h | System: INSTITUTIONAL v3.0"
         
         return message
     
@@ -192,8 +152,8 @@ class DetailedFormatter:
         if not symbol:
             return False
         
-        # Список стабильных монет
-        stablecoins = {'USDT', 'USDC', 'BUSD', 'DAI', 'TUSD', 'USDP', 'USDD', 'FRAX', 'LUSD', 'MIM'}
+        # Список стабильных монет (включая RLUSD)
+        stablecoins = {'USDT', 'USDC', 'BUSD', 'DAI', 'TUSD', 'USDP', 'USDD', 'FRAX', 'LUSD', 'MIM', 'RLUSD'}
         
         # Нормализуем символ (убираем разделители)
         symbol_upper = symbol.upper().replace('/', '').replace('-', '')
@@ -293,20 +253,12 @@ class DetailedFormatter:
         return message
     
     @staticmethod
-    def _format_opportunity_detailed(opp: Dict[str, Any], index: int) -> str:
-        """Детальное форматирование одной возможности (legacy)"""
-        # Используем новый enhanced метод
-        return DetailedFormatter._format_opportunity_enhanced(opp, index)
-    
-    @staticmethod
-    def _format_opportunity_enhanced(opp: Dict[str, Any], index: int) -> str:
+    def _format_opportunity_compact(opp: Dict[str, Any], index: int) -> str:
         """
-        Enhanced opportunity formatting with tier and warnings
-        
-        NEW: Shows tier, warnings, regime context
+        КОМПАКТНОЕ форматирование возможности (v3.0)
+        Минимум текста, максимум пользы
         """
         symbol = opp.get("symbol", "UNKNOWN")
-        tier = opp.get("tier", "unknown")
         tier_color = opp.get("tier_color", "⚪")
         tier_name = opp.get("tier_name", "Unknown")
         
@@ -322,78 +274,26 @@ class DetailedFormatter:
         current_price = opp.get("current_price", entry)
         change_24h = opp.get("change_24h", 0)
         
-        message = f"### {index}. {symbol} - {tier_color} {tier_name} Tier\n\n"
-        message += f"**Score:** {score:.1f}/10 | **Probability:** {probability:.0%} | **R:R:** 1:{rr:.1f}\n\n"
+        # COMPACT FORMAT: 1 строка заголовок + 3 строки данные + warnings
+        message = f"{index}. {symbol} - {tier_color} {tier_name} ({score:.1f}/10 | {probability:.0%} | R:R 1:{rr:.1f})\n"
+        message += f"   Entry: ${entry:.4f} | SL: ${sl:.4f} | TP: ${tp:.4f}\n"
         
-        # Entry details
-        message += "**Entry Plan:**\n"
-        message += f"• Current Price: ${current_price:.4f} ({change_24h:+.2f}% 24h)\n"
-        message += f"• Entry: ${entry:.4f}\n"
-        message += f"• Stop-Loss: ${sl:.4f}\n"
-        message += f"• Take-Profit: ${tp:.4f}\n"
-        message += f"• Position Size: {opp.get('position_size_multiplier', 1.0):.0%} of standard\n\n"
-        
-        # Tier recommendation
-        message += f"**Tier:** {tier_name} {tier_color}\n"
-        message += f"**Recommendation:** {opp.get('display_recommendation', 'N/A')}\n"
-        
-        # Warnings
+        # Warnings ONLY if important
         warning = opp.get("warning")
-        if warning:
-            message += f"\n**Warning:** {warning}\n"
-        
         regime_warning = opp.get("regime_warning")
+        
+        if warning:
+            message += f"   ⚠️ {warning}\n"
         if regime_warning:
-            message += f"**Regime Warning:** {regime_warning}\n"
+            message += f"   {regime_warning}\n"
         
-        # Key factors (if available)
-        key_factors = opp.get("key_factors", [])
-        if key_factors:
-            message += "\n**Key Factors:**\n"
-            for factor in key_factors[:5]:
-                message += f"• {factor}\n"
-        
-        message += "\n---\n\n"
+        message += "\n"
         return message
     
     @staticmethod
-    def _format_risk_assessment(best_long_score: float, best_short_score: float, btc_analysis: Dict) -> str:
-        """Форматирование оценки рисков"""
-        message = "RISK ASSESSMENT\n\n"
-        message += "Zero-Risk Methodology Evaluation:\n\n"
-        message += f"• Best LONG: Score {best_long_score:.2f}/10 (Need >=8.0)\n"
-        message += f"• Best SHORT: Score {best_short_score:.2f}/10 (Need >=8.0)\n\n"
-        
-        btc_status = btc_analysis.get("status", "neutral")
-        message += "Key Issues:\n\n"
-        
-        if btc_status == "bearish":
-            message += "• BTC in strong downtrend (favors SHORT)\n"
-        
-        if best_long_score < 8.0 or best_short_score < 8.0:
-            message += "• Most probabilities < 70% (need >=70%)\n"
-            message += "• Confluence scores < 8.0/10\n"
-        
-        if btc_status == "bearish" and best_short_score < 8.0:
-            message += "\nNote: SHORT opportunities may be more attractive given BTC downtrend, but still need confluence >= 8.0\n"
-        
-        return message
+    def _format_opportunity_detailed(opp: Dict[str, Any], index: int) -> str:
+        """Детальное форматирование одной возможности (legacy)"""
+        # Используем compact формат
+        return DetailedFormatter._format_opportunity_compact(opp, index)
     
-    @staticmethod
-    def _format_recommendation(passed_zero_risk: int, best_long_score: float, best_short_score: float) -> str:
-        """Форматирование рекомендаций"""
-        message = "RECOMMENDATION\n\n"
-        
-        if passed_zero_risk == 0:
-            message += "NO SAFE OPPORTUNITIES with confluence >= 8/10\n\n"
-            message += "What We're Waiting For:\n\n"
-            message += "• BTC reversal up or stabilization\n"
-            message += "• Altcoins showing independence from BTC\n"
-            message += "• Confluence >= 8.0/10 AND Probability >= 70%\n\n"
-            message += "Better to skip a trade than lose money!\n"
-        else:
-            message += f"Found {passed_zero_risk} safe opportunities meeting all criteria.\n"
-            message += "Review top opportunities above for entry points.\n"
-        
-        return message
 
