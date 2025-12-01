@@ -708,3 +708,7 @@ session_manager: Optional[SessionManager] = None
 **Автор:** AI Trading System Development Team
 
 
+
+
+
+

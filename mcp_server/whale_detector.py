@@ -171,3 +171,7 @@ class WhaleDetector:
         return min(0.95, conf)
 
 
+
+
+
+

@@ -139,3 +139,7 @@ kubectl logs -n trader-agent -l job-name --tail=50
 **Следующий шаг:** Запустить Docker и выполнить деплой по инструкции выше.
 
 
+
+
+
+

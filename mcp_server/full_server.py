@@ -8,6 +8,7 @@ import asyncio
 import json
 import os
 import sys
+import signal
 import traceback
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -1868,6 +1869,13 @@ async def main():
         logger.error("3. Does API key have READ permissions?")
         logger.error("4. Is your server IP whitelisted on Bybit?")
         logger.error("=" * 50)
+        
+        # Cleanup ресурсов перед выходом
+        try:
+            asyncio.run(cleanup_resources())
+        except Exception as cleanup_error:
+            logger.error(f"Error during cleanup: {cleanup_error}")
+        
         sys.exit(1)  # FAIL-FAST: Прерываем запуск если API невалиден
     
     logger.info("=" * 50)
@@ -1935,19 +1943,75 @@ async def main():
     logger.info("=" * 50)
     
     # Запуск MCP server
-    async with stdio_server() as (read_stream, write_stream):
-        await app.run(
-            read_stream,
-            write_stream,
-            app.create_initialization_options()
-        )
+    try:
+        async with stdio_server() as (read_stream, write_stream):
+            await app.run(
+                read_stream,
+                write_stream,
+                app.create_initialization_options()
+            )
+    finally:
+        # Всегда вызываем cleanup при завершении
+        await cleanup_resources()
+
+
+async def cleanup_resources():
+    """Закрытие всех ресурсов при завершении сервера"""
+    global trading_ops, bybit_client, position_monitor, signal_monitor
+    
+    logger.info("🔄 Cleaning up resources...")
+    
+    try:
+        # Останавливаем мониторинг позиций
+        if position_monitor:
+            try:
+                await position_monitor.stop_monitoring()
+                logger.info("✅ Position monitoring stopped")
+            except Exception as e:
+                logger.warning(f"Error stopping position monitor: {e}")
+        
+        # Останавливаем мониторинг сигналов
+        if signal_monitor:
+            try:
+                await signal_monitor.stop_monitoring()
+                logger.info("✅ Signal monitoring stopped")
+            except Exception as e:
+                logger.warning(f"Error stopping signal monitor: {e}")
+        
+        # Закрываем Bybit клиент
+        if bybit_client:
+            try:
+                await bybit_client.close()
+                logger.info("✅ Bybit client closed")
+            except Exception as e:
+                logger.warning(f"Error closing Bybit client: {e}")
+        
+        logger.info("✅ All resources cleaned up")
+    except Exception as e:
+        logger.error(f"Error during cleanup: {e}", exc_info=True)
 
 
 if __name__ == "__main__":
+    # Настройка обработчиков сигналов для graceful shutdown (до запуска asyncio)
+    def setup_signal_handlers():
+        """Установка обработчиков сигналов для graceful shutdown"""
+        def signal_handler(signum, frame):
+            logger.info(f"Received signal {signum}, initiating graceful shutdown...")
+            # Прерываем текущий event loop
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                loop.call_soon_threadsafe(loop.stop)
+        
+        signal.signal(signal.SIGINT, signal_handler)
+        if hasattr(signal, 'SIGTERM'):
+            signal.signal(signal.SIGTERM, signal_handler)
+    
+    setup_signal_handlers()
+    
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        logger.info("Server shutdown requested")
+        logger.info("Server shutdown requested (KeyboardInterrupt)")
     except Exception as e:
         logger.error(f"Server error: {e}", exc_info=True)
         sys.exit(1)
