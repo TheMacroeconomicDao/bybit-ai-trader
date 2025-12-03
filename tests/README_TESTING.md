@@ -73,3 +73,5 @@ pip install ccxt loguru pandas numpy ta python-dotenv pytz
 
 
 
+
+

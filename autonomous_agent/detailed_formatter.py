@@ -35,10 +35,10 @@ class DetailedFormatter:
             Полный отформатированный отчёт
         """
         if not analysis_result.get("success"):
-            return "❌ Ошибка анализа рынка. Попробуйте позже."
+            return "❌ Market analysis error. Please try again later."
         
         message = "🔍 INSTITUTIONAL MARKET ANALYSIS\n\n"
-        message += "━" * 50 + "\n\n"
+        message += "─" * 30 + "\n\n"
         
         # ═══════════════════════════════════════════════════════
         # MARKET REGIME - COMPACT
@@ -54,13 +54,13 @@ class DetailedFormatter:
             if thresholds:
                 message += f"🎯 THRESHOLDS: LONG {thresholds.get('long', 7.0):.1f}/10 | SHORT {thresholds.get('short', 7.0):.1f}/10\n"
             
-            message += "\n" + "━" * 50 + "\n\n"
+            message += "\n" + "─" * 30 + "\n\n"
         
         # BTC STATUS - COMPACT
         btc_analysis = analysis_result.get("btc_analysis", {})
         btc_status = btc_analysis.get("status", "neutral")
         message += f"BTC: {btc_status.upper()}\n\n"
-        message += "━" * 50 + "\n\n"
+        message += "─" * 30 + "\n\n"
         
         # TOP OPPORTUNITIES
         top_longs = analysis_result.get("top_3_longs", [])
@@ -82,7 +82,7 @@ class DetailedFormatter:
         else:
             message += "No opportunities found.\n\n"
         
-        message += "━" * 50 + "\n\n"
+        message += "─" * 30 + "\n\n"
         
         # SHORT OPPORTUNITIES - COMPACT (TOP-3 ONLY)
         message += f"📉 SHORT (Top 3 of {len(all_shorts)}):\n\n"
@@ -92,7 +92,7 @@ class DetailedFormatter:
         else:
             message += "No opportunities found.\n\n"
         
-        message += "━" * 50 + "\n\n"
+        message += "─" * 30 + "\n\n"
         
         # DIRECTION COMPARISON
         longs_found = analysis_result.get("longs_found", 0)
@@ -126,7 +126,7 @@ class DetailedFormatter:
         if passed_zero_risk == 0:
             message += "\n⚠️ NO ELITE OPPORTUNITIES (≥8.0/10) - Wait for better setups!\n"
         
-        message += "\n" + "━" * 50 + "\n"
+        message += "\n" + "─" * 30 + "\n"
         message += "Next scan: 12h | System: INSTITUTIONAL v3.0"
         
         return message

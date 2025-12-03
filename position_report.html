@@ -1,0 +1,1090 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Отчет по позициям - Bybit Trading</title>
+    <script type="text/javascript" src="https://s3.tradingview.com/tv.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+            color: #333;
+        }
+
+        .container {
+            max-width: 1600px;
+            margin: 0 auto;
+        }
+
+        /* Sticky Position Panel - всегда видна */
+        .sticky-position-panel {
+            position: sticky;
+            top: 20px;
+            z-index: 100;
+            background: rgba(255, 255, 255, 0.98);
+            border-radius: 15px;
+            padding: 15px 20px;
+            margin-bottom: 20px;
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.15);
+            backdrop-filter: blur(10px);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            flex-wrap: wrap;
+            gap: 15px;
+        }
+
+        .sticky-position-panel .position-quick-info {
+            display: flex;
+            align-items: center;
+            gap: 20px;
+            flex-wrap: wrap;
+        }
+
+        .sticky-position-panel .symbol {
+            font-size: 1.3em;
+            font-weight: bold;
+            color: #2d3748;
+        }
+
+        .sticky-position-panel .side {
+            padding: 6px 12px;
+            border-radius: 8px;
+            font-weight: bold;
+            font-size: 0.9em;
+        }
+
+        .sticky-position-panel .side.sell {
+            background: #fed7d7;
+            color: #742a2a;
+        }
+
+        .sticky-position-panel .side.buy {
+            background: #c6f6d5;
+            color: #22543d;
+        }
+
+        .sticky-position-panel .price-info {
+            display: flex;
+            gap: 20px;
+            align-items: center;
+        }
+
+        .sticky-position-panel .current-price {
+            font-size: 1.2em;
+            font-weight: bold;
+            color: #2d3748;
+        }
+
+        .sticky-position-panel .pnl {
+            font-size: 1.1em;
+            font-weight: bold;
+            padding: 6px 12px;
+            border-radius: 8px;
+        }
+
+        .sticky-position-panel .pnl.positive {
+            background: #c6f6d5;
+            color: #22543d;
+        }
+
+        .sticky-position-panel .pnl.negative {
+            background: #fed7d7;
+            color: #742a2a;
+        }
+
+        .sticky-position-panel .toggle-chart-btn {
+            padding: 8px 16px;
+            background: #667eea;
+            color: white;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            font-weight: 500;
+            transition: all 0.3s ease;
+        }
+
+        .sticky-position-panel .toggle-chart-btn:hover {
+            background: #5568d3;
+            transform: translateY(-2px);
+        }
+
+        .header {
+            background: rgba(255, 255, 255, 0.95);
+            border-radius: 20px;
+            padding: 30px;
+            margin-bottom: 20px;
+            box-shadow: 0 10px 40px rgba(0, 0, 0, 0.1);
+            backdrop-filter: blur(10px);
+        }
+
+        .header h1 {
+            color: #2d3748;
+            font-size: 2.5em;
+            margin-bottom: 10px;
+            display: flex;
+            align-items: center;
+            gap: 15px;
+        }
+
+        .header .timestamp {
+            color: #718096;
+            font-size: 0.9em;
+        }
+
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 20px;
+            margin-bottom: 20px;
+        }
+
+        .stat-card {
+            background: rgba(255, 255, 255, 0.95);
+            border-radius: 15px;
+            padding: 25px;
+            box-shadow: 0 5px 20px rgba(0, 0, 0, 0.1);
+            transition: transform 0.3s ease;
+        }
+
+        .stat-card:hover {
+            transform: translateY(-5px);
+        }
+
+        .stat-card .label {
+            color: #718096;
+            font-size: 0.85em;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            margin-bottom: 10px;
+        }
+
+        .stat-card .value {
+            color: #2d3748;
+            font-size: 2em;
+            font-weight: bold;
+        }
+
+        .stat-card .value.positive {
+            color: #48bb78;
+        }
+
+        .stat-card .value.negative {
+            color: #f56565;
+        }
+
+        .stat-card .sub-value {
+            color: #a0aec0;
+            font-size: 0.9em;
+            margin-top: 5px;
+        }
+
+        /* TradingView Chart Section */
+        .chart-section {
+            background: rgba(255, 255, 255, 0.95);
+            border-radius: 20px;
+            padding: 20px;
+            margin-bottom: 20px;
+            box-shadow: 0 10px 40px rgba(0, 0, 0, 0.1);
+            transition: all 0.3s ease;
+        }
+
+        .chart-section.collapsed {
+            max-height: 60px;
+            overflow: hidden;
+        }
+
+        .chart-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 15px;
+            padding-bottom: 15px;
+            border-bottom: 2px solid #edf2f7;
+        }
+
+        .chart-header h3 {
+            color: #2d3748;
+            font-size: 1.5em;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .chart-controls {
+            display: flex;
+            gap: 10px;
+            align-items: center;
+        }
+
+        .chart-timeframe-selector {
+            display: flex;
+            gap: 5px;
+            background: #edf2f7;
+            padding: 4px;
+            border-radius: 8px;
+        }
+
+        .chart-timeframe-btn {
+            padding: 6px 12px;
+            background: transparent;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-weight: 500;
+            transition: all 0.2s ease;
+            color: #4a5568;
+        }
+
+        .chart-timeframe-btn.active {
+            background: #667eea;
+            color: white;
+        }
+
+        .chart-timeframe-btn:hover {
+            background: #cbd5e0;
+        }
+
+        .chart-timeframe-btn.active:hover {
+            background: #5568d3;
+        }
+
+        .chart-container {
+            width: 100%;
+            height: 600px;
+            border-radius: 12px;
+            overflow: hidden;
+            background: #1a1a1a;
+        }
+
+        .chart-container.minimized {
+            height: 300px;
+        }
+
+        .position-markers {
+            display: flex;
+            gap: 15px;
+            margin-top: 15px;
+            flex-wrap: wrap;
+        }
+
+        .position-marker {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 8px 12px;
+            background: #f7fafc;
+            border-radius: 8px;
+            font-size: 0.9em;
+        }
+
+        .position-marker .dot {
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+        }
+
+        .position-marker .dot.entry {
+            background: #667eea;
+        }
+
+        .position-marker .dot.current {
+            background: #48bb78;
+        }
+
+        .position-marker .dot.support {
+            background: #c6f6d5;
+        }
+
+        .position-marker .dot.resistance {
+            background: #fed7d7;
+        }
+
+        .position-card {
+            background: rgba(255, 255, 255, 0.95);
+            border-radius: 20px;
+            padding: 30px;
+            margin-bottom: 20px;
+            box-shadow: 0 10px 40px rgba(0, 0, 0, 0.1);
+        }
+
+        .position-card h2 {
+            color: #2d3748;
+            font-size: 1.8em;
+            margin-bottom: 25px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .position-header {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 20px;
+            margin-bottom: 30px;
+        }
+
+        .position-info {
+            padding: 20px;
+            background: #f7fafc;
+            border-radius: 12px;
+            border-left: 4px solid #667eea;
+        }
+
+        .position-info .label {
+            color: #718096;
+            font-size: 0.85em;
+            margin-bottom: 5px;
+        }
+
+        .position-info .value {
+            color: #2d3748;
+            font-size: 1.3em;
+            font-weight: bold;
+        }
+
+        .position-info .value.side-sell {
+            color: #f56565;
+        }
+
+        .position-info .value.side-buy {
+            color: #48bb78;
+        }
+
+        .pnl-indicator {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 15px;
+            background: linear-gradient(135deg, #48bb78 0%, #38a169 100%);
+            border-radius: 12px;
+            color: white;
+            font-size: 1.5em;
+            font-weight: bold;
+        }
+
+        .pnl-indicator.negative {
+            background: linear-gradient(135deg, #f56565 0%, #e53e3e 100%);
+        }
+
+        .analysis-section {
+            background: rgba(255, 255, 255, 0.95);
+            border-radius: 20px;
+            padding: 30px;
+            margin-bottom: 20px;
+            box-shadow: 0 10px 40px rgba(0, 0, 0, 0.1);
+        }
+
+        .analysis-section h3 {
+            color: #2d3748;
+            font-size: 1.5em;
+            margin-bottom: 20px;
+        }
+
+        .timeframe-tabs {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 20px;
+            flex-wrap: wrap;
+        }
+
+        .timeframe-tab {
+            padding: 10px 20px;
+            background: #edf2f7;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            font-weight: 500;
+        }
+
+        .timeframe-tab.active {
+            background: #667eea;
+            color: white;
+        }
+
+        .timeframe-content {
+            display: none;
+        }
+
+        .timeframe-content.active {
+            display: block;
+        }
+
+        .indicators-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 15px;
+            margin-bottom: 20px;
+        }
+
+        .indicator-item {
+            padding: 15px;
+            background: #f7fafc;
+            border-radius: 10px;
+            border-left: 3px solid #667eea;
+        }
+
+        .indicator-item .name {
+            color: #718096;
+            font-size: 0.85em;
+            margin-bottom: 5px;
+        }
+
+        .indicator-item .value {
+            color: #2d3748;
+            font-size: 1.1em;
+            font-weight: bold;
+        }
+
+        .signal-badge {
+            display: inline-block;
+            padding: 8px 16px;
+            border-radius: 20px;
+            font-weight: bold;
+            font-size: 0.9em;
+            margin: 5px;
+        }
+
+        .signal-buy {
+            background: #c6f6d5;
+            color: #22543d;
+        }
+
+        .signal-sell {
+            background: #fed7d7;
+            color: #742a2a;
+        }
+
+        .signal-hold {
+            background: #feebc8;
+            color: #7c2d12;
+        }
+
+        .risk-metrics {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 15px;
+            margin-top: 20px;
+        }
+
+        .risk-item {
+            padding: 15px;
+            background: #fff5f5;
+            border-radius: 10px;
+            border-left: 3px solid #f56565;
+        }
+
+        .risk-item.low {
+            background: #f0fff4;
+            border-left-color: #48bb78;
+        }
+
+        .risk-item.medium {
+            background: #fffaf0;
+            border-left-color: #ed8936;
+        }
+
+        .progress-bar {
+            width: 100%;
+            height: 30px;
+            background: #edf2f7;
+            border-radius: 15px;
+            overflow: hidden;
+            margin-top: 10px;
+        }
+
+        .progress-fill {
+            height: 100%;
+            background: linear-gradient(90deg, #667eea 0%, #764ba2 100%);
+            transition: width 0.3s ease;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: white;
+            font-weight: bold;
+            font-size: 0.85em;
+        }
+
+        .levels-list {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+            margin-top: 10px;
+        }
+
+        .level-badge {
+            padding: 8px 16px;
+            background: #edf2f7;
+            border-radius: 8px;
+            font-weight: 500;
+        }
+
+        .level-badge.support {
+            background: #c6f6d5;
+            color: #22543d;
+        }
+
+        .level-badge.resistance {
+            background: #fed7d7;
+            color: #742a2a;
+        }
+
+        @keyframes pulse {
+            0%, 100% {
+                opacity: 1;
+            }
+            50% {
+                opacity: 0.7;
+            }
+        }
+
+        .live-indicator {
+            display: inline-block;
+            width: 10px;
+            height: 10px;
+            background: #48bb78;
+            border-radius: 50%;
+            margin-right: 8px;
+            animation: pulse 2s infinite;
+        }
+
+        .minimize-btn, .maximize-btn {
+            padding: 6px 12px;
+            background: #edf2f7;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 0.9em;
+            transition: all 0.2s ease;
+        }
+
+        .minimize-btn:hover, .maximize-btn:hover {
+            background: #cbd5e0;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>
+                <span class="live-indicator"></span>
+                Отчет по позициям
+            </h1>
+            <div class="timestamp" id="timestamp"></div>
+        </div>
+
+        <!-- Sticky Position Panel - всегда видна -->
+        <div class="sticky-position-panel">
+            <div class="position-quick-info">
+                <div class="symbol">BTC/USDT</div>
+                <div class="side sell">SHORT</div>
+                <div class="price-info">
+                    <div class="current-price">$86,343.23</div>
+                    <div class="pnl positive">+$0.75 (+0.43%)</div>
+                </div>
+            </div>
+            <button class="toggle-chart-btn" onclick="toggleChart()">
+                <span id="chart-toggle-text">📈 Показать график</span>
+            </button>
+        </div>
+
+        <!-- TradingView Chart Section -->
+        <div class="chart-section" id="chart-section" style="display: none;">
+            <div class="chart-header">
+                <h3>📊 График TradingView</h3>
+                <div class="chart-controls">
+                    <div class="chart-timeframe-selector">
+                        <button class="chart-timeframe-btn" onclick="changeTimeframe('15')">15m</button>
+                        <button class="chart-timeframe-btn active" onclick="changeTimeframe('60')">1h</button>
+                        <button class="chart-timeframe-btn" onclick="changeTimeframe('240')">4h</button>
+                        <button class="chart-timeframe-btn" onclick="changeTimeframe('D')">1D</button>
+                    </div>
+                    <button class="minimize-btn" onclick="minimizeChart()">−</button>
+                    <button class="minimize-btn" onclick="toggleChart()">✕</button>
+                </div>
+            </div>
+            <div class="chart-container" id="tradingview-chart"></div>
+            <div class="position-markers">
+                <div class="position-marker">
+                    <div class="dot entry"></div>
+                    <span>Entry: $86,716.40</span>
+                </div>
+                <div class="position-marker">
+                    <div class="dot current"></div>
+                    <span>Current: $86,343.23</span>
+                </div>
+                <div class="position-marker">
+                    <div class="dot support"></div>
+                    <span>Support: $84,006.82</span>
+                </div>
+                <div class="position-marker">
+                    <div class="dot resistance"></div>
+                    <span>Resistance: $86,768.96</span>
+                </div>
+            </div>
+        </div>
+
+        <div class="stats-grid">
+            <div class="stat-card">
+                <div class="label">Общий баланс</div>
+                <div class="value">$122.70</div>
+                <div class="sub-value">Unified Account</div>
+            </div>
+            <div class="stat-card">
+                <div class="label">Доступно</div>
+                <div class="value">$36.10</div>
+                <div class="sub-value">Свободные средства</div>
+            </div>
+            <div class="stat-card">
+                <div class="label">Использовано маржи</div>
+                <div class="value">$86.60</div>
+                <div class="sub-value">70.6% от баланса</div>
+            </div>
+            <div class="stat-card">
+                <div class="label">Unrealized PnL</div>
+                <div class="value positive">+$0.75</div>
+                <div class="sub-value">+0.43%</div>
+            </div>
+        </div>
+
+        <div class="position-card">
+            <h2>📊 Открытая позиция</h2>
+            
+            <div class="position-header">
+                <div class="position-info">
+                    <div class="label">Символ</div>
+                    <div class="value">BTC/USDT</div>
+                </div>
+                <div class="position-info">
+                    <div class="label">Направление</div>
+                    <div class="value side-sell">SHORT (Sell)</div>
+                </div>
+                <div class="position-info">
+                    <div class="label">Размер позиции</div>
+                    <div class="value">0.002 BTC</div>
+                </div>
+                <div class="position-info">
+                    <div class="label">Плечо</div>
+                    <div class="value">2x</div>
+                </div>
+            </div>
+
+            <div class="position-header" style="margin-top: 20px;">
+                <div class="position-info">
+                    <div class="label">Цена входа</div>
+                    <div class="value">$86,716.40</div>
+                </div>
+                <div class="position-info">
+                    <div class="label">Текущая цена</div>
+                    <div class="value">$86,343.23</div>
+                </div>
+                <div class="position-info">
+                    <div class="label">Разница</div>
+                    <div class="value positive">-$373.17</div>
+                </div>
+                <div class="position-info">
+                    <div class="label">Liquidation Price</div>
+                    <div class="value">$147,511.88</div>
+                </div>
+            </div>
+
+            <div style="margin-top: 25px;">
+                <div class="pnl-indicator">
+                    <span>💰 Unrealized PnL: +$0.75 (+0.43%)</span>
+                </div>
+            </div>
+
+            <div class="risk-metrics" style="margin-top: 25px;">
+                <div class="risk-item medium">
+                    <div class="label">Риск позиции</div>
+                    <div class="value">70.6%</div>
+                    <div class="progress-bar">
+                        <div class="progress-fill" style="width: 70.6%;">70.6%</div>
+                    </div>
+                </div>
+                <div class="risk-item low">
+                    <div class="label">Расстояние до ликвидации</div>
+                    <div class="value">70.8%</div>
+                    <div class="sub-value">Безопасно</div>
+                </div>
+            </div>
+        </div>
+
+        <div class="analysis-section">
+            <h3>📈 Технический анализ</h3>
+            
+            <div class="timeframe-tabs">
+                <button class="timeframe-tab active" onclick="showTimeframe('15m')">15 минут</button>
+                <button class="timeframe-tab" onclick="showTimeframe('1h')">1 час</button>
+                <button class="timeframe-tab" onclick="showTimeframe('4h')">4 часа</button>
+            </div>
+
+            <div id="15m" class="timeframe-content active">
+                <h4 style="margin-bottom: 15px; color: #4a5568;">15-минутный таймфрейм</h4>
+                <div class="indicators-grid">
+                    <div class="indicator-item">
+                        <div class="name">RSI (14)</div>
+                        <div class="value">57.22</div>
+                    </div>
+                    <div class="indicator-item">
+                        <div class="name">MACD</div>
+                        <div class="value">Bullish Crossover</div>
+                    </div>
+                    <div class="indicator-item">
+                        <div class="name">ADX</div>
+                        <div class="value">27.78 (Strong)</div>
+                    </div>
+                    <div class="indicator-item">
+                        <div class="name">Тренд</div>
+                        <div class="value">Sideways</div>
+                    </div>
+                    <div class="indicator-item">
+                        <div class="name">ATR (14)</div>
+                        <div class="value">407.94</div>
+                    </div>
+                    <div class="indicator-item">
+                        <div class="name">Volume Ratio</div>
+                        <div class="value">0.49 (Low)</div>
+                    </div>
+                </div>
+                <div style="margin-top: 20px;">
+                    <strong>Сигнал:</strong>
+                    <span class="signal-badge signal-buy">BUY</span>
+                    <span style="color: #718096; margin-left: 10px;">Score: 8.0 | Confidence: 65%</span>
+                </div>
+                <div style="margin-top: 15px;">
+                    <strong>Уровни поддержки:</strong>
+                    <div class="levels-list">
+                        <span class="level-badge support">$84,006.82</span>
+                    </div>
+                </div>
+                <div style="margin-top: 15px;">
+                    <strong>Уровни сопротивления:</strong>
+                    <div class="levels-list">
+                        <span class="level-badge resistance">$86,768.96</span>
+                    </div>
+                </div>
+            </div>
+
+            <div id="1h" class="timeframe-content">
+                <h4 style="margin-bottom: 15px; color: #4a5568;">1-часовой таймфрейм</h4>
+                <div class="indicators-grid">
+                    <div class="indicator-item">
+                        <div class="name">RSI (14)</div>
+                        <div class="value">46.53</div>
+                    </div>
+                    <div class="indicator-item">
+                        <div class="name">MACD</div>
+                        <div class="value">Bullish Crossover</div>
+                    </div>
+                    <div class="indicator-item">
+                        <div class="name">ADX</div>
+                        <div class="value">40.96 (Very Strong)</div>
+                    </div>
+                    <div class="indicator-item">
+                        <div class="name">Тренд</div>
+                        <div class="value">Sideways</div>
+                    </div>
+                    <div class="indicator-item">
+                        <div class="name">ATR (14)</div>
+                        <div class="value">777.37</div>
+                    </div>
+                    <div class="indicator-item">
+                        <div class="name">Volume Ratio</div>
+                        <div class="value">0.10 (Very Low)</div>
+                    </div>
+                </div>
+                <div style="margin-top: 20px;">
+                    <strong>Сигнал:</strong>
+                    <span class="signal-badge signal-buy">BUY</span>
+                    <span style="color: #718096; margin-left: 10px;">Score: 8.0 | Confidence: 65%</span>
+                </div>
+                <div style="margin-top: 15px;">
+                    <strong>Уровни поддержки:</strong>
+                    <div class="levels-list">
+                        <span class="level-badge support">$84,267.00</span>
+                    </div>
+                </div>
+                <div style="margin-top: 15px;">
+                    <strong>Уровни сопротивления:</strong>
+                    <div class="levels-list">
+                        <span class="level-badge resistance">$91,784.48</span>
+                    </div>
+                </div>
+            </div>
+
+            <div id="4h" class="timeframe-content">
+                <h4 style="margin-bottom: 15px; color: #4a5568;">4-часовой таймфрейм</h4>
+                <div class="indicators-grid">
+                    <div class="indicator-item">
+                        <div class="name">RSI (14)</div>
+                        <div class="value">36.95 (Oversold)</div>
+                    </div>
+                    <div class="indicator-item">
+                        <div class="name">MACD</div>
+                        <div class="value">Bearish Crossover</div>
+                    </div>
+                    <div class="indicator-item">
+                        <div class="name">ADX</div>
+                        <div class="value">27.49 (Strong)</div>
+                    </div>
+                    <div class="indicator-item">
+                        <div class="name">Тренд</div>
+                        <div class="value">Downtrend</div>
+                    </div>
+                    <div class="indicator-item">
+                        <div class="name">ATR (14)</div>
+                        <div class="value">1,284.46</div>
+                    </div>
+                    <div class="indicator-item">
+                        <div class="name">EMA Alignment</div>
+                        <div class="value">Bearish</div>
+                    </div>
+                </div>
+                <div style="margin-top: 20px;">
+                    <strong>Сигнал:</strong>
+                    <span class="signal-badge signal-sell">SELL</span>
+                    <span style="color: #718096; margin-left: 10px;">Score: 1.0 | Confidence: 45%</span>
+                </div>
+                <div style="margin-top: 15px;">
+                    <strong>⚠️ Предупреждения:</strong>
+                    <ul style="margin-top: 10px; color: #e53e3e;">
+                        <li>MACD bearish crossover</li>
+                        <li>Bearish EMA alignment</li>
+                        <li>Strong downtrend (ADX: 27.5)</li>
+                    </ul>
+                </div>
+                <div style="margin-top: 15px;">
+                    <strong>Уровни поддержки:</strong>
+                    <div class="levels-list">
+                        <span class="level-badge support">$84,479.25</span>
+                        <span class="level-badge support">$85,560.20</span>
+                    </div>
+                </div>
+                <div style="margin-top: 15px;">
+                    <strong>Уровни сопротивления:</strong>
+                    <div class="levels-list">
+                        <span class="level-badge resistance">$92,254.00</span>
+                    </div>
+                </div>
+            </div>
+
+            <div style="margin-top: 30px; padding: 20px; background: #f7fafc; border-radius: 12px;">
+                <h4 style="margin-bottom: 15px; color: #2d3748;">Композитный сигнал</h4>
+                <div style="display: flex; align-items: center; gap: 15px; flex-wrap: wrap;">
+                    <span class="signal-badge signal-hold">HOLD</span>
+                    <span style="color: #4a5568;"><strong>Score:</strong> 2.4</span>
+                    <span style="color: #4a5568;"><strong>Confidence:</strong> 34%</span>
+                    <span style="color: #4a5568;"><strong>Alignment:</strong> 67%</span>
+                </div>
+                <p style="margin-top: 15px; color: #718096;">
+                    <strong>Рекомендация:</strong> Нет чёткого сигнала. Лучше подождать более ясной картины.
+                </p>
+                <div style="margin-top: 15px; color: #4a5568;">
+                    <div>BUY сигналов: 2 | SELL сигналов: 1</div>
+                </div>
+            </div>
+        </div>
+
+        <div class="analysis-section">
+            <h3>📊 Рыночные данные</h3>
+            <div class="indicators-grid">
+                <div class="indicator-item">
+                    <div class="name">Текущая цена</div>
+                    <div class="value">$86,397.90</div>
+                </div>
+                <div class="indicator-item">
+                    <div class="name">Изменение 24ч</div>
+                    <div class="value negative">-2.88%</div>
+                </div>
+                <div class="indicator-item">
+                    <div class="name">Объем 24ч</div>
+                    <div class="value">$1.38B</div>
+                </div>
+                <div class="indicator-item">
+                    <div class="name">Максимум 24ч</div>
+                    <div class="value">$89,128.00</div>
+                </div>
+                <div class="indicator-item">
+                    <div class="name">Минимум 24ч</div>
+                    <div class="value">$83,821.60</div>
+                </div>
+                <div class="indicator-item">
+                    <div class="name">Bid/Ask</div>
+                    <div class="value">$86,400.20 / $86,400.30</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let tradingViewWidget = null;
+        let currentTimeframe = '60';
+        let isChartMinimized = false;
+
+        // TradingView Widget Initialization
+        function initTradingView(timeframe = '60') {
+            const container = document.getElementById('tradingview-chart');
+            if (!container) return;
+
+            // Remove existing widget if any
+            if (tradingViewWidget) {
+                container.innerHTML = '';
+            }
+
+            tradingViewWidget = new TradingView.widget({
+                autosize: true,
+                symbol: "BYBIT:BTCUSDT",
+                interval: timeframe,
+                timezone: "Etc/UTC",
+                theme: "dark",
+                style: "1",
+                locale: "ru",
+                toolbar_bg: "#1a1a1a",
+                enable_publishing: false,
+                allow_symbol_change: true,
+                container_id: "tradingview-chart",
+                studies: [
+                    "RSI@tv-basicstudies",
+                    "MACD@tv-basicstudies",
+                    "Volume@tv-basicstudies"
+                ],
+                // Добавляем горизонтальные линии для позиции
+                drawings_access: {
+                    type: 'black',
+                    tools: [
+                        { name: "LineTool" },
+                        { name: "HorzLineTool" }
+                    ]
+                },
+                disabled_features: [
+                    "use_localstorage_for_settings",
+                    "volume_force_overlay"
+                ],
+                enabled_features: [
+                    "study_templates",
+                    "side_toolbar_in_fullscreen_mode"
+                ]
+            });
+
+            // Добавляем маркеры позиции после загрузки графика
+            tradingViewWidget.onChartReady(() => {
+                // Можно добавить логику для отображения линий входа, SL, TP
+                console.log('TradingView chart ready');
+            });
+        }
+
+        function toggleChart() {
+            const chartSection = document.getElementById('chart-section');
+            const toggleText = document.getElementById('chart-toggle-text');
+            
+            if (chartSection.style.display === 'none') {
+                chartSection.style.display = 'block';
+                toggleText.textContent = '📉 Скрыть график';
+                
+                // Инициализируем график при первом открытии
+                if (!tradingViewWidget) {
+                    setTimeout(() => {
+                        initTradingView(currentTimeframe);
+                    }, 100);
+                }
+            } else {
+                chartSection.style.display = 'none';
+                toggleText.textContent = '📈 Показать график';
+            }
+        }
+
+        function changeTimeframe(timeframe) {
+            currentTimeframe = timeframe;
+            
+            // Update active button
+            document.querySelectorAll('.chart-timeframe-btn').forEach(btn => {
+                btn.classList.remove('active');
+            });
+            event.target.classList.add('active');
+            
+            // Reinitialize chart with new timeframe
+            if (tradingViewWidget) {
+                initTradingView(timeframe);
+            }
+        }
+
+        function minimizeChart() {
+            const container = document.getElementById('tradingview-chart');
+            if (isChartMinimized) {
+                container.style.height = '600px';
+                container.classList.remove('minimized');
+                isChartMinimized = false;
+            } else {
+                container.style.height = '300px';
+                container.classList.add('minimized');
+                isChartMinimized = true;
+            }
+            
+            // Resize TradingView widget
+            if (tradingViewWidget) {
+                setTimeout(() => {
+                    window.dispatchEvent(new Event('resize'));
+                }, 100);
+            }
+        }
+
+        function showTimeframe(tf) {
+            // Hide all content
+            document.querySelectorAll('.timeframe-content').forEach(el => {
+                el.classList.remove('active');
+            });
+            
+            // Remove active from all tabs
+            document.querySelectorAll('.timeframe-tab').forEach(el => {
+                el.classList.remove('active');
+            });
+            
+            // Show selected content
+            document.getElementById(tf).classList.add('active');
+            
+            // Add active to clicked tab
+            event.target.classList.add('active');
+        }
+
+        // Update timestamp
+        function updateTimestamp() {
+            const now = new Date();
+            const options = { 
+                year: 'numeric', 
+                month: 'long', 
+                day: 'numeric', 
+                hour: '2-digit', 
+                minute: '2-digit',
+                second: '2-digit',
+                timeZoneName: 'short'
+            };
+            document.getElementById('timestamp').textContent = 
+                'Обновлено: ' + now.toLocaleString('ru-RU', options);
+        }
+
+        // Update sticky panel data (можно подключить к реальным данным)
+        function updateStickyPanel() {
+            // Здесь можно обновлять данные из API
+            // Пока используем статические данные
+        }
+
+        updateTimestamp();
+        setInterval(updateTimestamp, 1000);
+        
+        // Auto-update sticky panel every 5 seconds
+        setInterval(updateStickyPanel, 5000);
+    </script>
+</body>
+</html>
+

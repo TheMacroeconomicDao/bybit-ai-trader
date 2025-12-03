@@ -88,3 +88,5 @@ echo "  kubectl get cronjob -n trader-agent"
 
 
 
+
+

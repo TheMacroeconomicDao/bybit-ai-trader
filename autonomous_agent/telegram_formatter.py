@@ -24,7 +24,7 @@ class TelegramFormatter:
             Отформатированное сообщение для Telegram
         """
         if not analysis_result.get("success"):
-            return "❌ Ошибка анализа рынка. Попробуйте позже."
+            return "❌ Market analysis error. Please try again later."
         
         top_longs = analysis_result.get("top_3_longs", [])
         top_shorts = analysis_result.get("top_3_shorts", [])
@@ -71,23 +71,23 @@ class TelegramFormatter:
         
         # Метрики
         message += f"⭐ Confluence: {score}/10\n"
-        message += f"📈 Вероятность: {probability*100:.0f}%\n\n"
+        message += f"📈 Probability: {probability*100:.0f}%\n\n"
         
         # Ключевые факторы
         if factors:
-            message += "🔑 Ключевые факторы:\n"
+            message += "🔑 Key Factors:\n"
             for factor in factors[:5]:
                 message += f"  • {factor}\n"
             message += "\n"
         
         # Обоснование
         if reasoning:
-            message += f"💡 Обоснование:\n{reasoning}\n\n"
+            message += f"💡 Reasoning:\n{reasoning}\n\n"
         
         # Timeframes alignment
         timeframes = opp.get("timeframes_alignment", [])
         if timeframes:
-            message += f"⏰ Таймфреймы: {', '.join(timeframes)}\n"
+            message += f"⏰ Timeframes: {', '.join(timeframes)}\n"
         
         return message
     
@@ -131,5 +131,5 @@ class TelegramFormatter:
     @staticmethod
     def format_error(error: str) -> str:
         """Форматирование ошибки"""
-        return f"❌ Ошибка: {error}\n\nПопробуйте позже или проверьте логи."
+        return f"❌ Error: {error}\n\nPlease try again later or check the logs."
 
