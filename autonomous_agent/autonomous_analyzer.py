@@ -220,34 +220,34 @@ class AutonomousAnalyzer:
         autonomous_instructions = """
 === AUTONOMOUS AGENT MODE ===
 
-Ты - автономный торговый агент, который анализирует криптовалютный рынок и находит ТОП 3 лучших ЛОНГА и ТОП 3 лучших ШОРТА.
+You are an autonomous trading agent analyzing the cryptocurrency market to find TOP 3 best LONG and TOP 3 best SHORT opportunities.
 
-ТВОЯ ЗАДАЧА:
-1. Проанализировать предоставленные рыночные данные
-2. Найти ТОП 3 ЛОНГА с confluence ≥ 8.0/10
-3. Найти ТОП 3 ШОРТА с confluence ≥ 8.0/10
-4. Вероятность успеха ≥ 70% для каждой возможности
-5. R:R минимум 1:2 для каждой возможности
-6. Детально объяснить каждую возможность
+YOUR TASK:
+1. Analyze the provided market data
+2. Find TOP 3 LONG with confluence ≥ 8.0/10
+3. Find TOP 3 SHORT with confluence ≥ 8.0/10
+4. Success probability ≥ 70% for each opportunity
+5. R:R minimum 1:2 for each opportunity
+6. Explain each opportunity in detail
 
-КРИТИЧЕСКИ ВАЖНО:
-- НЕ предлагай возможности с confluence < 8.0
-- Разделяй ЛОНГИ и ШОРТЫ отдельно
-- Для ЛОНГОВ ищи oversold условия, поддержки, bullish паттерны
-- Для ШОРТОВ ищи overbought условия, сопротивления, bearish паттерны
-- НЕ предлагай возможности с вероятностью < 70%
-- НЕ предлагай возможности с R:R < 1:2
-- Всегда проверяй BTC статус перед рекомендацией altcoins
-- Используй multi-timeframe анализ
-- Объясняй ДЕТАЛЬНО почему именно эта возможность
+CRITICAL RULES:
+- DO NOT suggest opportunities with confluence < 8.0
+- Separate LONG and SHORT opportunities
+- For LONG look for oversold conditions, support levels, bullish patterns
+- For SHORT look for overbought conditions, resistance levels, bearish patterns
+- DO NOT suggest opportunities with probability < 70%
+- DO NOT suggest opportunities with R:R < 1:2
+- Always check BTC status before recommending altcoins
+- Use multi-timeframe analysis
+- Explain in DETAIL why this specific opportunity
 
-ФОРМАТ ОТВЕТА:
-Всегда возвращай валидный JSON с полями:
-- top_longs: массив из 3 лучших ЛОНГОВ
-- top_shorts: массив из 3 лучших ШОРТОВ
-- market_summary: краткое резюме рынка
-- btc_status: статус BTC
-- recommendations: общие рекомендации
+RESPONSE FORMAT:
+Always return valid JSON with fields:
+- top_longs: array of 3 best LONG opportunities
+- top_shorts: array of 3 best SHORT opportunities
+- market_summary: brief market summary
+- btc_status: BTC status
+- recommendations: general recommendations
 
 """
         
@@ -1135,33 +1135,33 @@ class AutonomousAnalyzer:
         for i, opp in enumerate(all_longs[:3]):
             formatted = self._format_opportunity(opp)
             
-            # Добавляем предупреждение если score < 8.0
+            # Add warning if score < 8.0
             final_score = opp.get("final_score", 0)
             if final_score < 8.0:
                 formatted["warning"] = (
-                    f"⚠️ ВНИМАНИЕ: Score {final_score:.1f}/12 "
-                    f"ниже минимума (8.0). Рекомендуется ОСТОРОЖНОСТЬ или ПОДОЖДАТЬ."
+                    f"⚠️ WARNING: Score {final_score:.1f}/12 "
+                    f"below minimum (8.0). CAUTION recommended or WAIT."
                 )
-                formatted["recommendation"] = "ОСТОРОЖНО - только для опытных"
+                formatted["recommendation"] = "CAUTION - experienced traders only"
             else:
-                formatted["recommendation"] = "ОТКРЫВАТЬ"
+                formatted["recommendation"] = "EXECUTE"
             
             top_longs.append(formatted)
         
-        # Топ 3 ШОРТА  
+        # Top 3 SHORT  
         for i, opp in enumerate(all_shorts[:3]):
             formatted = self._format_opportunity(opp)
             
-            # Добавляем предупреждение если score < 8.0
+            # Add warning if score < 8.0
             final_score = opp.get("final_score", 0)
             if final_score < 8.0:
                 formatted["warning"] = (
-                    f"⚠️ ВНИМАНИЕ: Score {final_score:.1f}/12 "
-                    f"ниже минимума (8.0). Рекомендуется ОСТОРОЖНОСТЬ или ПОДОЖДАТЬ."
+                    f"⚠️ WARNING: Score {final_score:.1f}/12 "
+                    f"below minimum (8.0). CAUTION recommended or WAIT."
                 )
-                formatted["recommendation"] = "ОСТОРОЖНО - только для опытных"
+                formatted["recommendation"] = "CAUTION - experienced traders only"
             else:
-                formatted["recommendation"] = "ОТКРЫВАТЬ"
+                formatted["recommendation"] = "EXECUTE"
             
             top_shorts.append(formatted)
         
@@ -1201,12 +1201,12 @@ class AutonomousAnalyzer:
             final_score = opp.get("final_score", 0)
             if final_score < 8.0:
                 formatted["warning"] = (
-                    f"⚠️ ВНИМАНИЕ: Score {final_score:.1f}/12 "
-                    f"ниже минимума (8.0). Рекомендуется ОСТОРОЖНОСТЬ."
+                    f"⚠️ WARNING: Score {final_score:.1f}/12 "
+                    f"below minimum (8.0). CAUTION recommended."
                 )
-                formatted["recommendation"] = "ОСТОРОЖНО - только для опытных"
+                formatted["recommendation"] = "CAUTION - experienced traders only"
             else:
-                formatted["recommendation"] = "ОТКРЫВАТЬ"
+                formatted["recommendation"] = "EXECUTE"
             
             existing.append(formatted)
         

@@ -174,11 +174,11 @@ async def publish_market_analysis(signal_tracker: Optional[Any] = None):
     
     # Формируем сообщение
     message = "MARKET ANALYSIS REPORT\n\n"
-    message += "━" * 40 + "\n\n"
+    message += "─" * 30 + "\n\n"
     
     # BTC STATUS (РЕАЛЬНЫЕ ДАННЫЕ)
     message += format_btc_status(btc_data)
-    message += "\n" + "━" * 40 + "\n\n"
+    message += "\n" + "─" * 30 + "\n\n"
     
     # TOP OPPORTUNITIES
     message += "TOP OPPORTUNITIES (After Full Market Scan)\n\n"
@@ -192,7 +192,7 @@ async def publish_market_analysis(signal_tracker: Optional[Any] = None):
     else:
         message += "No opportunities found.\n\n"
     
-    message += "━" * 40 + "\n\n"
+    message += "─" * 30 + "\n\n"
     
     # SHORT OPPORTUNITIES
     message += "SHORT OPPORTUNITIES:\n\n"
@@ -203,7 +203,7 @@ async def publish_market_analysis(signal_tracker: Optional[Any] = None):
     else:
         message += "No opportunities found.\n\n"
     
-    message += "━" * 40 + "\n\n"
+    message += "─" * 30 + "\n\n"
     
     # DIRECTION COMPARISON
     message += "DIRECTION COMPARISON:\n\n"
@@ -211,7 +211,7 @@ async def publish_market_analysis(signal_tracker: Optional[Any] = None):
     message += f"• SHORT found: {len(all_shorts)} opportunities\n"
     message += f"• Best LONG score: {best_long_score:.2f}\n"
     message += f"• Best SHORT score: {best_short_score:.2f}\n\n"
-    message += "━" * 40 + "\n\n"
+    message += "─" * 30 + "\n\n"
     
     # RISK ASSESSMENT
     message += "RISK ASSESSMENT\n\n"
@@ -229,7 +229,7 @@ async def publish_market_analysis(signal_tracker: Optional[Any] = None):
         message += "• Most probabilities < 70% (need >=70%)\n"
         message += "• Confluence scores < 8.0/10\n"
     
-    message += "\n" + "━" * 40 + "\n\n"
+    message += "\n" + "─" * 30 + "\n\n"
     
     # SCAN STATISTICS
     message += "SCAN STATISTICS\n\n"
@@ -238,7 +238,7 @@ async def publish_market_analysis(signal_tracker: Optional[Any] = None):
     message += f"• LONG Opportunities: {len(all_longs)}\n"
     message += f"• SHORT Opportunities: {len(all_shorts)}\n"
     message += f"• Passed Zero-Risk Evaluation: {passed_zero_risk}\n\n"
-    message += "━" * 40 + "\n\n"
+    message += "─" * 30 + "\n\n"
     
     # RECOMMENDATION
     message += "RECOMMENDATION\n\n"
@@ -253,7 +253,7 @@ async def publish_market_analysis(signal_tracker: Optional[Any] = None):
         message += f"Found {passed_zero_risk} safe opportunities meeting all criteria.\n"
         message += "Review top opportunities above for entry points.\n"
     
-    message += "\n" + "━" * 40 + "\n\n"
+    message += "\n" + "─" * 30 + "\n\n"
     
     # System Status
     message += f"System Status: Full capacity ({total_scanned} assets scanned)\n"

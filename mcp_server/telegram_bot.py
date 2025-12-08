@@ -275,7 +275,7 @@ if __name__ == "__main__":
     else:
         # Отправить сообщение
         chat_id = sys.argv[2]
-        message = sys.argv[3] if len(sys.argv) > 3 else "Тестовое сообщение"
+        message = sys.argv[3] if len(sys.argv) > 3 else "Test message"
         
         async def send():
             await bot.send_message(chat_id, message)

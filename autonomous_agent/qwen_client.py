@@ -190,20 +190,20 @@ class QwenClient:
             Анализ от Qwen с топовыми точками входа
         """
         prompt = f"""
-Проанализируй следующие рыночные данные и найди ТОП 3 лучших ЛОНГА и ТОП 3 лучших ШОРТА для торговли.
+Analyze the following market data and find TOP 3 best LONG and TOP 3 best SHORT opportunities for trading.
 
-Рыночные данные:
+Market Data:
 {json.dumps(market_data, ensure_ascii=False, indent=2)}
 
-Требования:
-1. Найди ТОП 3 ЛОНГА с confluence ≥ 8.0/10
-2. Найди ТОП 3 ШОРТА с confluence ≥ 8.0/10
-3. Вероятность успеха ≥ 70% для каждой возможности
-4. R:R минимум 1:2 для каждой возможности
-5. Детально объясни каждую возможность
-6. Укажи конкретные уровни входа, SL, TP
+Requirements:
+1. Find TOP 3 LONG with confluence ≥ 8.0/10
+2. Find TOP 3 SHORT with confluence ≥ 8.0/10
+3. Success probability ≥ 70% for each opportunity
+4. R:R minimum 1:2 for each opportunity
+5. Explain each opportunity in detail
+6. Specify exact entry, SL, TP levels
 
-Формат ответа (JSON):
+Response Format (JSON):
 {{
     "top_longs": [
         {{
@@ -215,7 +215,7 @@ class QwenClient:
             "confluence_score": 8.5,
             "probability": 0.75,
             "risk_reward": 2.0,
-            "reasoning": "Детальное объяснение почему это хороший лонг",
+            "reasoning": "Detailed explanation why this is a good long entry",
             "timeframes_alignment": ["1h", "4h", "1d"],
             "key_factors": ["RSI oversold", "Support level", "Bullish pattern"]
         }}
@@ -230,14 +230,14 @@ class QwenClient:
             "confluence_score": 8.3,
             "probability": 0.72,
             "risk_reward": 2.0,
-            "reasoning": "Детальное объяснение почему это хороший шорт",
+            "reasoning": "Detailed explanation why this is a good short entry",
             "timeframes_alignment": ["1h", "4h", "1d"],
             "key_factors": ["RSI overbought", "Resistance level", "Bearish pattern"]
         }}
     ],
-    "market_summary": "Краткое резюме рыночной ситуации",
+    "market_summary": "Brief summary of market conditions",
     "btc_status": "bullish/neutral/bearish",
-    "recommendations": ["Общие рекомендации"]
+    "recommendations": ["General recommendations"]
 }}
 """
         
