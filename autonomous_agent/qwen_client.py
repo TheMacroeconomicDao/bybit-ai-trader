@@ -58,10 +58,12 @@ class QwenClient:
         system_prompt: Optional[str] = None,
         temperature: float = 0.7,
         max_tokens: int = 2000,
-        top_p: float = 0.8
+        top_p: float = 0.8,
+        retries: int = 5,
+        initial_backoff: float = 1.0
     ) -> Dict[str, Any]:
         """
-        Генерация ответа от Qwen
+        Генерация ответа от Qwen с обработкой ошибок и повторными попытками.
         
         Args:
             prompt: Пользовательский промпт
@@ -69,6 +71,8 @@ class QwenClient:
             temperature: Температура генерации (0-1)
             max_tokens: Максимальное количество токенов
             top_p: Top-p sampling
+            retries: Количество повторных попыток при ошибках 429
+            initial_backoff: Начальное время ожидания в секундах
             
         Returns:
             Ответ от модели с метаданными
@@ -76,25 +80,15 @@ class QwenClient:
         headers = {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
-            "HTTP-Referer": "https://github.com/your-repo",  # Опционально, для отслеживания
-            "X-Title": "Trader Agent"  # Опционально, название приложения
+            "HTTP-Referer": "https://github.com/your-repo",
+            "X-Title": "Trader Agent"
         }
         
-        # Формируем сообщения в формате OpenAI
         messages = []
-        
         if system_prompt:
-            messages.append({
-                "role": "system",
-                "content": system_prompt
-            })
+            messages.append({"role": "system", "content": system_prompt})
+        messages.append({"role": "user", "content": prompt})
         
-        messages.append({
-            "role": "user",
-            "content": prompt
-        })
-        
-        # OpenRouter использует стандартный OpenAI формат
         payload = {
             "model": self.model,
             "messages": messages,
@@ -102,95 +96,83 @@ class QwenClient:
             "max_tokens": max_tokens,
             "top_p": top_p
         }
+
+        backoff_time = initial_backoff
         
-        try:
-            async with aiohttp.ClientSession() as session:
-                async with session.post(
-                    self.base_url,
-                    headers=headers,
-                    json=payload,
-                    timeout=aiohttp.ClientTimeout(total=60)
-                ) as response:
-                    response_text = await response.text()
-                    
-                    # ✅ PRODUCTION-READY обработка 401
-                    if response.status == 401:
-                        error_msg = (
-                            f"❌ OpenRouter API Authentication Failed (401)\n"
-                            f"Response: {response_text}\n\n"
-                            f"SOLUTIONS:\n"
-                            f"1. Check OPENROUTER_API_KEY in .env file\n"
-                            f"2. Verify key format: should start with 'sk-or-v1-'\n"
-                            f"3. Get new key at: https://openrouter.ai/keys\n"
-                            f"4. Check account balance at: https://openrouter.ai/credits\n"
-                        )
-                        logger.error(error_msg)
+        for attempt in range(retries):
+            try:
+                async with aiohttp.ClientSession() as session:
+                    async with session.post(
+                        self.base_url,
+                        headers=headers,
+                        json=payload,
+                        timeout=aiohttp.ClientTimeout(total=60)
+                    ) as response:
                         
-                        return {
-                            "success": False,
-                            "error": "authentication_failed",
-                            "content": "",
-                            "details": response_text,
-                            "action_required": "Check OPENROUTER_API_KEY in .env",
-                            "graceful_fallback": True,
-                            "message": "Qwen AI analysis skipped due to API authentication error"
-                        }
-                    
-                    if response.status == 200:
-                        data = await response.json()
-                        
-                        # Обработка ответа OpenRouter (OpenAI-совместимый формат)
-                        if "choices" in data and len(data["choices"]) > 0:
-                            choice = data["choices"][0]
-                            content = choice.get("message", {}).get("content", "")
-                            
+                        if response.status == 200:
+                            data = await response.json()
+                            if "choices" in data and len(data["choices"]) > 0:
+                                choice = data["choices"][0]
+                                content = choice.get("message", {}).get("content", "")
+                                return {
+                                    "success": True, "content": content,
+                                    "usage": data.get("usage", {}), "model": data.get("model", self.model),
+                                    "id": data.get("id", "")
+                                }
+                            logger.warning(f"Unexpected response format: {data}")
                             return {
-                                "success": True,
-                                "content": content,
-                                "usage": data.get("usage", {}),
-                                "model": data.get("model", self.model),
-                                "id": data.get("id", "")
+                                "success": True, "content": json.dumps(data, ensure_ascii=False),
+                                "usage": data.get("usage", {}), "model": data.get("model", self.model)
                             }
                         
-                        # Fallback для других форматов ответа
-                        logger.warning(f"Unexpected response format: {data}")
-                        return {
-                            "success": True,
-                            "content": json.dumps(data, ensure_ascii=False),
-                            "usage": data.get("usage", {}),
-                            "model": data.get("model", self.model)
-                        }
-                    else:
-                        logger.error(f"OpenRouter API error {response.status}: {response_text}")
+                        elif response.status == 429:
+                            logger.warning(f"Rate limit exceeded (429). Retrying in {backoff_time:.2f} seconds... (Attempt {attempt + 1}/{retries})")
+                            await asyncio.sleep(backoff_time)
+                            backoff_time *= 2  # Exponential backoff
+                            continue
+
+                        elif response.status == 401:
+                            response_text = await response.text()
+                            error_msg = (
+                                f"❌ OpenRouter API Authentication Failed (401)\nResponse: {response_text}\n\n"
+                                f"SOLUTIONS:\n1. Check OPENROUTER_API_KEY in .env file\n"
+                                f"2. Verify key format: should start with 'sk-or-v1-'\n"
+                                f"3. Get new key at: https://openrouter.ai/keys\n"
+                                f"4. Check account balance at: https://openrouter.ai/credits\n"
+                            )
+                            logger.error(error_msg)
+                            return {
+                                "success": False, "error": "authentication_failed", "content": "",
+                                "details": response_text, "action_required": "Check OPENROUTER_API_KEY in .env",
+                                "graceful_fallback": True, "message": "Qwen AI analysis skipped due to API authentication error"
+                            }
                         
-                        # НОВЫЙ GRACEFUL FALLBACK
-                        return {
-                            "success": False,
-                            "error": f"API error {response.status}",
-                            "content": "",
-                            "graceful_fallback": True,
-                            "message": f"Qwen AI analysis skipped (API error {response.status})"
-                        }
-                        
-        
-        except asyncio.TimeoutError:
-            logger.error("Qwen API request timeout")
-            return {
-                "success": False,
-                "error": "Request timeout",
-                "content": "",
-                "graceful_fallback": True,
-                "message": "Qwen AI analysis skipped (timeout)"
-            }
-        except Exception as e:
-            logger.error(f"Qwen API error: {e}", exc_info=True)
-            return {
-                "success": False,
-                "error": str(e),
-                "content": "",
-                "graceful_fallback": True,
-                "message": f"Qwen AI analysis skipped ({str(e)})"
-            }
+                        else:
+                            response_text = await response.text()
+                            logger.error(f"OpenRouter API error {response.status}: {response_text}")
+                            return {
+                                "success": False, "error": f"API error {response.status}", "content": "",
+                                "graceful_fallback": True, "message": f"Qwen AI analysis skipped (API error {response.status})"
+                            }
+            
+            except asyncio.TimeoutError:
+                logger.error("Qwen API request timeout")
+                return {
+                    "success": False, "error": "Request timeout", "content": "",
+                    "graceful_fallback": True, "message": "Qwen AI analysis skipped (timeout)"
+                }
+            except Exception as e:
+                logger.error(f"Qwen API error: {e}", exc_info=True)
+                return {
+                    "success": False, "error": str(e), "content": "",
+                    "graceful_fallback": True, "message": f"Qwen AI analysis skipped ({str(e)})"
+                }
+
+        logger.error(f"Failed to generate response after {retries} retries.")
+        return {
+            "success": False, "error": "rate_limit_exceeded", "content": "",
+            "graceful_fallback": True, "message": f"Qwen AI analysis skipped after {retries} failed attempts due to rate limiting."
+        }
     
     async def analyze_market_opportunities(
         self,
