@@ -100,3 +100,4 @@ python3 mcp_server/telegram_bot.py 8003689195:AAGxQsopKvlLS34H2TZ0S1a0K7s4yV4iOB
 ---
 
 **Готово!** Теперь у тебя есть chat_id новой группы. Используй его для обновления конфигурации.
+

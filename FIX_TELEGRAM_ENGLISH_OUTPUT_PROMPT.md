@@ -204,3 +204,4 @@ message += f"⏰ Timeframes: {', '.join(timeframes)}\n"
 ---
 
 **ГОТОВО К ИСПРАВЛЕНИЮ!** 🚀
+

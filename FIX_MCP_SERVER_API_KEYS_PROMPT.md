@@ -329,3 +329,4 @@ node -e "console.log('BYBIT_API_KEY:', process.env.BYBIT_API_KEY ? 'SET (' + pro
 - ✅ Логи показывают успешную загрузку API ключей
 
 
+

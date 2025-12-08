@@ -224,3 +224,4 @@ private onPositionClick(position: Position): void {
 - Проверить консоль на ошибки
 
 
+

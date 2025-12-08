@@ -145,3 +145,4 @@ kubectl logs -n trader-agent -l job-name --tail=50
 
 
 
+

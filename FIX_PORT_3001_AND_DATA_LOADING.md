@@ -178,3 +178,4 @@ BYBIT_API_SECRET=your_secret
 - Нет ошибок в консоли MCP сервера
 
 
+
