@@ -220,6 +220,13 @@ class MarketScanner:
                 # Skip if already in open positions
                 if ticker['symbol'] in open_positions_symbols:
                     return None
+                
+                # ═══════════════════════════════════════════════════════
+                # НОВОЕ: Фильтрация стейбл/стейбл пар
+                # ═══════════════════════════════════════════════════════
+                if self._is_stable_stable_pair(ticker['symbol']):
+                    logger.debug(f"Skipping stable/stable pair: {ticker['symbol']}")
+                    return None
                     
                 async with semaphore:
                     try:
@@ -370,6 +377,19 @@ class MarketScanner:
                 market_regime
             )
             
+            # ✅ УБЕДИТЬСЯ что даже если сигналов мало, показываем лучшие:
+            if len(top_longs) < 3 and len(all_longs) > 0:
+                # Добавляем недостающие из all_longs (даже если score низкий)
+                for opp in all_longs[len(top_longs):3]:
+                    if opp.get("score", 0) >= 3.0:  # Минимум 3.0/20
+                        top_longs.append(opp)
+            
+            if len(top_shorts) < 3 and len(all_shorts) > 0:
+                # Добавляем недостающие из all_shorts
+                for opp in all_shorts[len(top_shorts):3]:
+                    if opp.get("score", 0) >= 3.0:  # Минимум 3.0/20
+                        top_shorts.append(opp)
+            
             logger.info(f"Display: TOP-{len(top_longs)} LONGS, TOP-{len(top_shorts)} SHORTS")
             
             # ML enhancement if available
@@ -500,6 +520,46 @@ class MarketScanner:
                 "found_count": 0
             }
     
+    @staticmethod
+    def _is_stable_stable_pair(symbol: str) -> bool:
+        """
+        Проверка, является ли пара СТЕЙБЛ/СТЕЙБЛ
+        
+        Исключаем:
+        - USDC/USDT, BUSD/USDT (стейбл/стейбл)
+        - USDT/TRY, USDT/BRL (стейбл/фиат)
+        - RLUSD/USDT и подобные
+        
+        НЕ исключаем:
+        - BTC/USDT, ETH/USDT (крипта/стейбл)
+        """
+        if not symbol:
+            return False
+        
+        # Список стабильных монет и фиатов
+        stablecoins = {
+            'USDT', 'USDC', 'BUSD', 'DAI', 'TUSD', 
+            'USDP', 'USDD', 'FRAX', 'LUSD', 'MIM', 'RLUSD'
+        }
+        fiats = {'TRY', 'BRL', 'EUR', 'GBP', 'AUD', 'RUB'}
+        stable_and_fiat = stablecoins | fiats
+        
+        # Нормализуем символ
+        symbol_upper = symbol.upper().replace('/', '').replace('-', '').replace(':', '')
+        
+        # Проверяем все комбинации
+        for stable1 in stable_and_fiat:
+            if symbol_upper.endswith(stable1):
+                base = symbol_upper[:-len(stable1)]
+                if base in stable_and_fiat:
+                    return True
+            if symbol_upper.startswith(stable1):
+                quote = symbol_upper[len(stable1):]
+                if quote in stable_and_fiat:
+                    return True
+        
+        return False
+    
     def _check_indicator_criteria(self, analysis: Dict, criteria: Dict) -> bool:
         """Проверка индикаторных критериев"""
         
@@ -540,40 +600,48 @@ class MarketScanner:
     
     def _calculate_opportunity_score(self, analysis: Dict, ticker: Dict, btc_trend: str = "neutral", entry_plan: Dict = None) -> Dict[str, Any]:
         """
-        15-POINT CONFLUENCE MATRIX (SIMPLIFIED - NO PARANOID STOPS)
+        20-POINT CONFLUENCE MATRIX с PENALTIES для слабых сигналов
         
-        CLASSIC TA (6 points):
-        1. Trend Alignment: 0-2
-        2. Indicators: 0-2
-        3. Pattern: 0-1
-        4. S/R Level: 0-1
-        
-        ORDER FLOW (4 points):
-        5. CVD + Aggressive: 0-2
-        6. Volume: 0-1
-        7. BTC Support: 0-1
-        
-        SMART MONEY (3 points):
-        8. Order Blocks: 0-1
-        9. FVG: 0-1
-        10. BOS/ChoCh: 0-1
-        
-        BONUSES (2 points):
-        11. R:R ≥ 2.5: 0-1
-        12. ADX > 25: 0-1
-        
-        РЕКОМЕНДАЦИИ:
-        7.0+/15 = Можно рассмотреть (с warning)
-        10.0+/15 = Recommended
-        12.0+/15 = Strong
-        13.5+/15 = Excellent
+        ВАЖНО: Penalties применяются ПЕРЕД основным scoring!
         """
-        
         score = 0.0
         breakdown = {}
+        penalties = []  # НОВОЕ: список примененных penalties
+        warnings = []   # НОВОЕ: список warnings
         
         composite = analysis.get('composite_signal', {})
         signal = composite.get('signal', 'HOLD')
+        confidence = composite.get('confidence', 0.5)
+        
+        # ═══════════════════════════════════════════════════════
+        # PENALTY PHASE: Применяем penalties ПЕРЕД scoring
+        # ═══════════════════════════════════════════════════════
+        
+        # PENALTY #1: Composite Signal HOLD
+        if signal == 'HOLD':
+            penalty = -2.0
+            score += penalty
+            penalties.append(f"HOLD signal: {penalty:.1f}")
+            breakdown['hold_penalty'] = penalty
+            warnings.append("⚠️ Composite signal is HOLD (uncertainty)")
+            
+            # Дополнительный penalty если confidence низкая
+            if confidence < 0.5:
+                additional_penalty = -1.0
+                score += additional_penalty
+                penalties.append(f"HOLD + low confidence ({confidence:.2f}): {additional_penalty:.1f}")
+                breakdown['hold_low_conf_penalty'] = additional_penalty
+                warnings.append(f"⚠️ Very low confidence ({confidence:.2f})")
+        
+        # PENALTY #2: Low Confidence (независимо от signal)
+        if confidence < 0.4:
+            penalty = -1.5
+            score += penalty
+            penalties.append(f"Very low confidence ({confidence:.2f}): {penalty:.1f}")
+            breakdown['low_confidence_penalty'] = penalty
+            warnings.append(f"🔴 Critical: Confidence too low ({confidence:.2f} < 0.4)")
+        
+        # Определяем направление (после penalties, но до основного scoring)
         is_long = signal in ['STRONG_BUY', 'BUY']
         is_short = signal in ['STRONG_SELL', 'SELL']
         
@@ -582,6 +650,31 @@ class MarketScanner:
             sell_signals = composite.get('sell_signals', 0)
             is_long = buy_signals > sell_signals
             is_short = sell_signals > buy_signals
+        
+        # PENALTY #3: Volume на коротких TF (для скальпинга)
+        entry_timeframe = entry_plan.get('entry_timeframe', '5m') if entry_plan else '5m'
+        
+        if entry_timeframe in ['1m', '5m', '15m']:
+            volume_penalties = self._check_scalping_volume_penalties(analysis, entry_timeframe, is_long)
+            if volume_penalties:
+                total_vol_penalty = sum(volume_penalties.values())
+                score += total_vol_penalty
+                penalties.append(f"Low volume on short TF: {total_vol_penalty:.1f}")
+                breakdown['volume_penalties'] = volume_penalties
+                warnings.append(f"⚠️ Low volume detected on {entry_timeframe}")
+        
+        # PENALTY #4: MACD Alignment на коротких TF
+        if entry_timeframe in ['1m', '5m', '15m']:
+            macd_penalty = self._check_macd_alignment_penalty(analysis, is_long, entry_timeframe)
+            if macd_penalty < 0:
+                score += macd_penalty
+                penalties.append(f"MACD contradiction: {macd_penalty:.1f}")
+                breakdown['macd_penalty'] = macd_penalty
+                warnings.append("⚠️ MACD contradicts direction on short timeframes")
+        
+        # ═══════════════════════════════════════════════════════
+        # SCORING PHASE: Продолжаем обычный scoring
+        # ═══════════════════════════════════════════════════════
         
         h4_data = analysis.get('timeframes', {}).get('4h', {})
         current_price = ticker['price']
@@ -816,59 +909,254 @@ class MarketScanner:
         breakdown['volume_profile'] = vp_score
         score += vp_score
         
-        # НОВЫЙ MAXIMUM: 20 points
-        final_score = min(20.0, max(0.0, score))
+        # НОВЫЙ MAXIMUM: 20 points (но может быть отрицательным после penalties!)
+        final_score = min(20.0, max(-5.0, score))  # Разрешаем до -5.0 для очень плохих
         
-        # Логируем финальный score
+        # Добавляем penalties и warnings в breakdown
+        breakdown['penalties_applied'] = penalties
+        breakdown['warnings'] = warnings
+        breakdown['penalties_total'] = sum([
+            p for p in breakdown.values() 
+            if isinstance(p, (int, float)) and p < 0
+        ])
+        
+        # Генерируем warning сообщение
+        warning = self._generate_warning_from_penalties(penalties, warnings) if penalties else None
+        
+        # Логируем финальный score с penalties
         symbol = ticker.get('symbol', 'UNKNOWN')
-        logger.info(f"{symbol}: 20-point score = {final_score:.2f}/20")
-        
-        # Обновленные warnings для 20-point
-        warning = None
-        if final_score < 10.0:
-            warning = f"⚠️ Score {final_score:.1f}/20 too low"
-        elif final_score < 13.0:
-            warning = f"⚠️ Score {final_score:.1f}/20 below recommended (need 13.0+)"
+        if penalties:
+            logger.info(
+                f"{symbol}: Applied {len(penalties)} penalties, "
+                f"total: {breakdown.get('penalties_total', 0):.1f}, "
+                f"final score: {final_score:.2f}/20"
+            )
+        else:
+            logger.info(f"{symbol}: 20-point score = {final_score:.2f}/20")
         
         return {
             "total": final_score,
             "breakdown": breakdown,
-            "system": "20-point-advanced",
-            "blocked": False,
+            "system": "20-point-advanced-with-penalties",
+            "blocked": False,  # НЕ блокируем, только снижаем score
             "reason": None,
             "warning": warning
         }
     
-    def _estimate_probability(self, score: float, analysis: Dict) -> float:
+    def _check_scalping_volume_penalties(
+        self,
+        analysis: Dict,
+        entry_timeframe: str,
+        is_long: bool
+    ) -> Dict[str, float]:
         """
-        Оценка вероятности для 15-point системы (SIMPLIFIED)
-        
-        Score 7.0/15 = 50% probability (can consider)
-        Score 10.0/15 = 70% probability (recommended)
-        Score 12.0/15 = 80% probability (strong)
-        Score 13.5/15 = 90% probability (excellent)
+        Проверка volume на коротких TF и применение penalties
         
         Args:
-            score: Confluence score (0-15)
+            analysis: Полный анализ актива
+            entry_timeframe: Таймфрейм входа ('1m', '5m', '15m')
+            is_long: True для LONG, False для SHORT
+        
+        Returns:
+            Dict с penalties по каждому TF: {"1m": -1.5, "5m": -1.0, ...}
+        """
+        penalties = {}
+        short_tfs = ['1m', '5m', '15m']
+        
+        for tf in short_tfs:
+            tf_data = analysis.get('timeframes', {}).get(tf, {})
+            if 'error' in tf_data:
+                continue
+            
+            vol_data = tf_data.get('indicators', {}).get('volume', {})
+            vol_ratio = vol_data.get('volume_ratio', 1.0)
+            
+            # Критически низкий volume (<0.3)
+            if vol_ratio < 0.3:
+                if tf == entry_timeframe:
+                    penalties[tf] = -2.0  # Критический penalty на entry TF
+                else:
+                    penalties[tf] = -1.5  # Большой penalty на других TF
+            
+            # Низкий volume для скальпинга (<0.5)
+            elif vol_ratio < 0.5:
+                if tf == '1m':
+                    penalties[tf] = -1.5
+                elif tf == '5m':
+                    penalties[tf] = -1.0
+                elif tf == '15m':
+                    penalties[tf] = -0.5
+            
+            # Умеренно низкий volume (<0.7) - только на entry TF
+            elif vol_ratio < 0.7 and tf == entry_timeframe:
+                penalties[tf] = -0.5
+        
+        return penalties
+    
+    def _check_macd_alignment_penalty(
+        self,
+        analysis: Dict,
+        is_long: bool,
+        entry_timeframe: str
+    ) -> float:
+        """
+        Проверка MACD alignment на коротких TF
+        
+        Args:
+            analysis: Полный анализ актива
+            is_long: True для LONG, False для SHORT
+            entry_timeframe: Таймфрейм входа
+        
+        Returns:
+            Penalty (отрицательное число) если есть противоречия, 0.0 если OK
+        """
+        short_tfs = ['1m', '5m', '15m']
+        bearish_count = 0
+        bullish_count = 0
+        macd_details = {}
+        
+        for tf in short_tfs:
+            tf_data = analysis.get('timeframes', {}).get(tf, {})
+            if 'error' in tf_data:
+                continue
+            
+            macd = tf_data.get('indicators', {}).get('macd', {})
+            crossover = macd.get('crossover', 'neutral')
+            macd_details[tf] = crossover
+            
+            if crossover == 'bearish':
+                bearish_count += 1
+            elif crossover == 'bullish':
+                bullish_count += 1
+        
+        # Penalty для LONG если MACD bearish
+        if is_long:
+            if bearish_count >= 2:
+                return -1.5  # 2+ TF показывают bearish → большой penalty
+            elif bearish_count >= 1:
+                return -0.5  # 1 TF bearish → небольшой penalty
+        
+        # Penalty для SHORT если MACD bullish
+        else:  # is_short
+            if bullish_count >= 2:
+                return -1.5  # 2+ TF показывают bullish → большой penalty
+            elif bullish_count >= 1:
+                return -0.5  # 1 TF bullish → небольшой penalty
+        
+        return 0.0  # Нет противоречий
+    
+    def _generate_warning_from_penalties(
+        self, 
+        penalties: List[str], 
+        warnings: List[str] = None
+    ) -> Optional[str]:
+        """
+        Генерация warning сообщения из списка penalties
+        
+        Args:
+            penalties: Список строк с описанием penalties
+            warnings: Список дополнительных warnings
+        
+        Returns:
+            Warning сообщение или None
+        """
+        if not penalties:
+            return None
+        
+        # Вычисляем общий penalty
+        total_penalty = 0.0
+        for p in penalties:
+            if ':' in p:
+                try:
+                    penalty_value = float(p.split(':')[-1].strip())
+                    total_penalty += penalty_value
+                except ValueError:
+                    continue
+        
+        # Генерируем warning в зависимости от severity
+        if total_penalty <= -6.0:
+            severity = "🔴 CRITICAL"
+            message = f"Multiple critical issues detected ({len(penalties)} penalties, total: {total_penalty:.1f})"
+        elif total_penalty <= -4.0:
+            severity = "🔴 HIGH RISK"
+            message = f"Several serious issues detected ({len(penalties)} penalties, total: {total_penalty:.1f})"
+        elif total_penalty <= -2.0:
+            severity = "⚠️ WARNING"
+            message = f"Some issues detected ({len(penalties)} penalties, total: {total_penalty:.1f})"
+        else:
+            severity = "⚠️"
+            message = f"Minor issues: {', '.join(penalties[:2])}"
+        
+        # Добавляем детали если есть warnings
+        if warnings:
+            message += f" | {', '.join(warnings[:2])}"
+        
+        return f"{severity} {message}"
+    
+    def _estimate_probability(self, score: float, analysis: Dict) -> float:
+        """
+        Оценка вероятности успеха - ИСПРАВЛЕННАЯ ВЕРСИЯ
+        
+        Args:
+            score: Confluence score (0-20, raw, МОЖЕТ БЫТЬ ОТРИЦАТЕЛЬНЫМ после penalties!)
             analysis: Полный анализ актива
         
         Returns:
-            Вероятность успеха (0.30-0.95)
+            Вероятность успеха (0.25-0.75) - РЕАЛИСТИЧНАЯ!
         """
         composite = analysis.get('composite_signal', {})
-        confidence = composite.get('confidence', 0.7)
+        signal = composite.get('signal', 'HOLD')
+        confidence = composite.get('confidence', 0.5)
+        comp_score = abs(composite.get('score', 0))
         
-        # Базовая вероятность от 15-point score
-        # Простая линейная формула: score/15 * 1.35
-        # 7/15 = 0.46 * 1.35 = 0.62 → ~0.50 после adjustment
-        # 10/15 = 0.67 * 1.35 = 0.90 → ~0.70 после adjustment
-        # 12/15 = 0.80 * 1.35 = 1.08 → ~0.80 после adjustment
-        base_prob = min(0.95, max(0.30, (score / 15.0) * 1.35))
+        # ═══════════════════════════════════════════════════════
+        # HARD STOP: HOLD с низкой confidence → очень низкая probability
+        # ═══════════════════════════════════════════════════════
+        if signal == 'HOLD' and confidence < 0.5:
+            return 0.30  # Минимум 30% для HOLD с низкой confidence
         
-        # Умножаем на confidence (but keep reasonable)
-        adjusted_prob = base_prob * max(0.7, confidence)
+        # ═══════════════════════════════════════════════════════
+        # Базовая вероятность от score (20-point → 25-75%)
+        # ═══════════════════════════════════════════════════════
+        # Score может быть отрицательным после penalties!
+        # Score 0.0 = 25%, Score 5.0 = 30%, Score 10.0 = 45%, Score 15.0 = 60%, Score 20.0 = 75%
+        base_score = max(0.0, score)  # Не позволяем отрицательному score снижать ниже 25%
+        base_prob = 0.25 + (base_score - 0.0) * 0.025  # 0.0=25%, 20.0=75%
+        base_prob = max(0.25, min(0.75, base_prob))  # Ограничиваем 25-75%
         
-        return round(min(0.95, max(0.30, adjusted_prob)), 2)
+        # ═══════════════════════════════════════════════════════
+        # КРИТИЧНО: Confidence как MULTIPLIER (не минимум!)
+        # ═══════════════════════════════════════════════════════
+        # Если confidence = 0.5, то probability = 50% от base
+        # Если confidence = 0.8, то probability = 80% от base
+        # Если confidence = 0.3, то probability = 30% от base (но минимум 25%)
+        confidence_multiplier = max(0.3, confidence)  # Минимум 30% от confidence
+        adjusted_prob = base_prob * confidence_multiplier
+        
+        # ═══════════════════════════════════════════════════════
+        # Корректировка на signal type
+        # ═══════════════════════════════════════════════════════
+        if signal == 'STRONG_BUY' or signal == 'STRONG_SELL':
+            adjusted_prob *= 1.1  # +10% за strong signal
+        elif signal == 'BUY' or signal == 'SELL':
+            adjusted_prob *= 1.0  # Без изменений
+        elif signal == 'HOLD':
+            adjusted_prob *= 0.5  # -50% за HOLD (даже если confidence OK)
+        
+        # ═══════════════════════════════════════════════════════
+        # Корректировка на composite score
+        # ═══════════════════════════════════════════════════════
+        if comp_score < 3:
+            adjusted_prob *= 0.7  # Ещё больше снижаем при слабом composite score
+        elif comp_score > 7:
+            adjusted_prob *= 1.05  # Небольшой бонус за сильный composite score
+        
+        # ═══════════════════════════════════════════════════════
+        # Финальные ограничения
+        # ═══════════════════════════════════════════════════════
+        final_prob = min(0.75, max(0.25, adjusted_prob))  # 25-75% максимум!
+        
+        return round(final_prob, 2)
     
     def _generate_entry_plan(self, analysis: Dict, ticker: Dict, account_balance: Optional[float] = None, risk_percent: float = 0.02) -> Dict[str, Any]:
         """Генерация плана входа (для LONG или SHORT) с Динамическим риск-менеджментом
@@ -955,7 +1243,8 @@ class MarketScanner:
             "risk_usd": round(risk_usd, 2),
             "max_risk_allowed": round(risk_usd, 2),
             "leverage_hint": "Use 1x-3x max",
-            "position_size_calc": f"Risk ${risk_usd:.2f} / Stop Dist {risk_per_share:.4f} = {qty} units" if account_balance else "BALANCE UNAVAILABLE - CANNOT CALCULATE"
+            "position_size_calc": f"Risk ${risk_usd:.2f} / Stop Dist {risk_per_share:.4f} = {qty} units" if account_balance else "BALANCE UNAVAILABLE - CANNOT CALCULATE",
+            "entry_timeframe": "5m"  # По умолчанию для скальпинга (может быть переопределен)
         }
         
         if warning:
